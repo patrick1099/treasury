@@ -14,14 +14,14 @@ ai-cli-migrate/
 
 ```powershell
 py -3 migrate.py status                     # 看本机装了哪个、多大
-py -3 migrate.py export                      # 同时导出两者到当前目录
+py -3 migrate.py export                      # 同时导出两者(默认存到 ai-cli-migrate 目录)
 py -3 migrate.py export --out-dir D:\bak     # 指定输出目录
 py -3 migrate.py export --include-logs        # Codex 连 logs 一起(默认不带)
 py -3 migrate.py import --claude claude-backup-XXXX.zip --codex codex-backup-XXXX.zip
 py -3 migrate.py import --claude <c.zip> --codex <x.zip> --remap-user dell alice  # 新机用户名不同,两者一起改
 ```
 
-导出得到两个包:`claude-backup-<时间戳>.zip`、`codex-backup-<时间戳>.zip`。两者都**不含登录凭证**,新机导入后各自重新 `/login`。
+导出得到两个包:`claude-backup-<时间戳>.zip`、`codex-backup-<时间戳>.zip`,默认就存在本工具目录(`ai-cli-migrate/`)下,已被 `.gitignore` 排除不会进仓库。两者都**不含登录凭证**,新机导入后各自重新 `/login`。
 
 ## 各迁了什么 / 不迁什么
 

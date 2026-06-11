@@ -52,7 +52,7 @@ def cmd_status(_args):
 
 
 def cmd_export(args):
-    out_dir = Path(args.out_dir).resolve() if args.out_dir else Path.cwd()
+    out_dir = Path(args.out_dir).resolve() if args.out_dir else HERE
     out_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     rc = 0
@@ -113,7 +113,7 @@ def main():
     ps.set_defaults(func=cmd_status)
 
     pe = sub.add_parser("export", help="导出两者")
-    pe.add_argument("--out-dir", help="输出目录,默认当前目录")
+    pe.add_argument("--out-dir", help="输出目录,默认 ai-cli-migrate 工具目录")
     pe.add_argument("--include-logs", action="store_true", help="Codex 一并打包 logs_*.sqlite")
     pe.add_argument("--no-history", action="store_true", help="Claude 不含聊天记录")
     pe.add_argument("--only", choices=["claude", "codex"], help="只导出其中一个")

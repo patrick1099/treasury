@@ -289,8 +289,12 @@ def main(argv=None):
 
     try:
         if args.command == "export":
+            out = args.out
+            if out is None:
+                ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+                out = Path(__file__).resolve().parent / f"codex-backup-{ts}.zip"
             summary = export_package(
-                args.profile, args.out, force=args.force, include_logs=args.include_logs
+                args.profile, out, force=args.force, include_logs=args.include_logs
             )
             print(
                 "Exported "
@@ -339,7 +343,11 @@ def _build_parser():
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     export_parser = subparsers.add_parser("export", help="export a Codex profile")
-    export_parser.add_argument("--out", required=True, type=Path, help="output zip path")
+    export_parser.add_argument(
+        "--out",
+        type=Path,
+        help="output zip path (default: <tool dir>/codex-backup-<timestamp>.zip)",
+    )
     export_parser.add_argument(
         "--profile",
         type=Path,
