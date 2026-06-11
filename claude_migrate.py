@@ -182,7 +182,8 @@ def cmd_export(args):
         log(f"找不到 {CLAUDE_DIR},这台机器没装 Claude Code?")
         return 1
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    out = Path(args.out) if args.out else Path.cwd() / f"claude-backup-{ts}.zip"
+    default_dir = Path(__file__).resolve().parent
+    out = Path(args.out) if args.out else default_dir / f"claude-backup-{ts}.zip"
     out = out.resolve()
     if out.is_dir():
         out = out / f"claude-backup-{ts}.zip"
