@@ -9,7 +9,7 @@
 用法:
   py -3 migrate.py status
   py -3 migrate.py export [--out-dir DIR] [--include-logs] [--no-history] [--only claude|codex]
-  py -3 migrate.py import [--claude ZIP] [--codex ZIP] [--remap-user OLD NEW]
+  py -3 migrate.py import [--claude ZIP] [--codex ZIP] [--remap-user OLD NEW] [--remap-path OLD_PATH NEW_PATH]
 """
 
 import argparse
@@ -90,6 +90,8 @@ def cmd_import(args):
         a = ["import", str(Path(args.claude).resolve())]
         if args.remap_user:
             a += ["--remap-user", args.remap_user[0], args.remap_user[1]]
+        if args.remap_path:
+            a += ["--remap-path", args.remap_path[0], args.remap_path[1]]
         rc |= run(CLAUDE_TOOL, a)
 
     if args.codex:
@@ -125,6 +127,10 @@ def main():
     pi.add_argument(
         "--remap-user", nargs=2, metavar=("OLD", "NEW"),
         help="新机用户名不同时,改写旧用户名(Claude 改会话目录名+jsonl;Codex 改会话文件+sqlite 路径列)",
+    )
+    pi.add_argument(
+        "--remap-path", nargs=2, metavar=("OLD_PATH", "NEW_PATH"),
+        help="工程搬到新文件夹时,改写按旧绝对路径编码的会话目录(仅 Claude;Codex 历史不按路径归档)",
     )
     pi.set_defaults(func=cmd_import)
 
