@@ -23,6 +23,7 @@ import argparse
 import getpass
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -292,6 +293,85 @@ def remap_user_projects(projects_dir, old, new, dry_run=False):
     return renamed, rewritten
 
 
+def encode_project_path(abs_path):
+    """复刻 Claude Code 给 projects/ 子目录命名的编码规则:
+    把绝对路径里每个非字母数字字符替换成一个 '-'(不折叠、不小写)。
+    例: C:\\Users\\dell\\Desktop\\需求\\…\\Code -> C--Users-dell-Desktop-------------Code
+    已对本机现有目录逐一验证一致。
+    """
+    return re.sub(r"[^a-zA-Z0-9]", "-", abs_path)
+
+
+def _path_byte_variants(path):
+    """同一路径在文件里可能出现的几种写法(返回 bytes 列表,按一一对应顺序)。"""
+    bs = path.replace("/", "\\")          # 反斜杠形态  C:\Users\...
+    return [
+        bs.encode("utf-8"),                       # C:\Users\...   (单反斜杠)
+        bs.replace("\\", "\\\\").encode("utf-8"),  # C:\\Users\\... (JSON 转义)
+        bs.replace("\\", "/").encode("utf-8"),     # C:/Users/...   (正斜杠)
+    ]
+
+
+def remap_path_projects(projects_dir, old_path, new_path, dry_run=False):
+    """工程整体搬到新路径时,把 projects/ 下按旧路径编码的会话目录改名,
+    并改写 jsonl/memory 正文里出现的旧路径(各种写法)和旧编码串。
+
+    匹配规则:目录名恰为 enc(old),或以 `enc(old)-` 开头(覆盖该工程的 worktree 子目录,
+    如 `…Code--worktree-remaining-qa`)。返回 (重命名目录数, 改写内容文件数)。
+    """
+    if not projects_dir.exists():
+        return 0, 0
+
+    enc_old = encode_project_path(old_path)
+    enc_new = encode_project_path(new_path)
+
+    def _is_target(name):
+        return name == enc_old or name.startswith(enc_old + "-")
+
+    renamed = 0
+    for d in sorted(p for p in projects_dir.iterdir() if p.is_dir()):
+        if not _is_target(d.name):
+            continue
+        target = projects_dir / (enc_new + d.name[len(enc_old):])
+        if dry_run:
+            log(f"    {d.name}  ->  {target.name}")
+            renamed += 1
+            continue
+        if target.exists():
+            for f in d.rglob("*"):
+                if f.is_file():
+                    dst = target / f.relative_to(d)
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(f), str(dst))
+            shutil.rmtree(d, ignore_errors=True)
+        else:
+            d.rename(target)
+        renamed += 1
+
+    if dry_run:
+        return renamed, 0
+
+    # 正文改写:旧路径各写法 -> 新路径,外加编码串 enc(old) -> enc(new)
+    old_v = _path_byte_variants(old_path)
+    new_v = _path_byte_variants(new_path)
+    patterns = list(zip(old_v, new_v))
+    patterns.append((enc_old.encode("utf-8"), enc_new.encode("utf-8")))
+
+    rewritten = 0
+    for f in projects_dir.rglob("*"):
+        if not f.is_file():
+            continue
+        data = f.read_bytes()
+        new_data = data
+        for a, b in patterns:
+            if a and a in new_data:
+                new_data = new_data.replace(a, b)
+        if new_data != data:
+            f.write_bytes(new_data)
+            rewritten += 1
+    return renamed, rewritten
+
+
 def cmd_import(args):
     archive = Path(args.archive).resolve()
     if not archive.exists():
@@ -334,6 +414,18 @@ def cmd_import(args):
                 log(f"[dry-run] 改写用户名 {old} -> {new}: 命中 {len(hits)} 个会话目录")
                 for d in hits:
                     log(f"    {d}  ->  {d.replace(seg_old, f'Users-{new}-')}")
+            if args.remap_path:
+                op, np = args.remap_path
+                enc_old, enc_new = encode_project_path(op), encode_project_path(np)
+                proj_dirs = sorted({
+                    n.split("/")[2] for n in names
+                    if n.startswith("claude/projects/") and len(n.split("/")) > 3
+                })
+                hits = [d for d in proj_dirs
+                        if d == enc_old or d.startswith(enc_old + "-")]
+                log(f"[dry-run] 改写路径 {op} -> {np}: 命中 {len(hits)} 个会话目录")
+                for d in hits:
+                    log(f"    {d}  ->  {enc_new + d[len(enc_old):]}")
             log("[dry-run] 未做任何改动。")
             return 0
 
@@ -362,6 +454,12 @@ def cmd_import(args):
         old, new = args.remap_user
         log(f"\n改写会话目录用户名: {old} -> {new}")
         renamed, rewritten = remap_user_projects(CLAUDE_DIR / "projects", old, new)
+        log(f"  目录改名 {renamed} 个,内容路径改写 {rewritten} 个文件")
+
+    if args.remap_path:
+        op, np = args.remap_path
+        log(f"\n改写工程路径: {op} -> {np}")
+        renamed, rewritten = remap_path_projects(CLAUDE_DIR / "projects", op, np)
         log(f"  目录改名 {renamed} 个,内容路径改写 {rewritten} 个文件")
 
     log("\n完成。下一步:")
@@ -443,6 +541,11 @@ def main():
     pi.add_argument(
         "--remap-user", nargs=2, metavar=("OLD", "NEW"),
         help="新机用户名不同时,把会话目录(及其中路径)的旧用户名改写为新用户名",
+    )
+    pi.add_argument(
+        "--remap-path", nargs=2, metavar=("OLD_PATH", "NEW_PATH"),
+        help="工程搬到新文件夹时,把按旧绝对路径编码的会话目录改名并改写其中路径"
+             "(与 --remap-user 同用时,NEW_PATH 请写新用户名下的路径)",
     )
     pi.set_defaults(func=cmd_import)
 

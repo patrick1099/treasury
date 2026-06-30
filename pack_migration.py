@@ -83,6 +83,16 @@ ai-cli-迁移包-日期/
    ```
    它会改写会话目录名、jsonl 里的路径、以及 Codex sqlite 里的路径列。
 
+   **如果工程要放到不同的文件夹**(比如旧机在 `C:\\Users\\dell\\Desktop\\proj`,
+   新机想放 `D:\\work\\proj`),加 `--remap-path` 让聊天记录/记忆跟着工程走,
+   否则新路径下 Claude 找不到旧历史:
+   ```
+   py -3 migrate.py import --claude ..\\data\\claude-backup-XXXX.zip --remap-path "C:\\Users\\dell\\Desktop\\proj" "D:\\work\\proj"
+   ```
+   > 说明:Claude 的聊天记录和记忆是**按工程绝对路径**归档的;路径变了就得 remap。
+   > 用户名和文件夹都变,就两个参数一起加(`--remap-path` 的新路径里写新用户名)。
+   > Codex 历史不按路径归档,挪文件夹不影响,无需 `--remap-path`。
+
 4. 打开 Claude Code 和 Codex,各自 `/login` 重新登录。完事。
 
 ## 单独只导一个

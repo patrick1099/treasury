@@ -7,7 +7,8 @@ ai-cli-migrate/
 ├── migrate.py          统一入口(一条命令同时处理两者)
 ├── claude_migrate.py   Claude Code: ~/.claude
 ├── codex_migrate.py    Codex: ~/.codex
-└── tests/              codex 工具的 pytest
+├── pack_migration.py   一键打包(+ 打包.bat / 桌面快捷方式)
+└── tests/              pytest(claude + codex)
 ```
 
 ## 统一入口(推荐)
@@ -19,7 +20,14 @@ py -3 migrate.py export --out-dir D:\bak     # 指定输出目录
 py -3 migrate.py export --include-logs        # Codex 连 logs 一起(默认不带)
 py -3 migrate.py import --claude claude-backup-XXXX.zip --codex codex-backup-XXXX.zip
 py -3 migrate.py import --claude <c.zip> --codex <x.zip> --remap-user dell alice  # 新机用户名不同,两者一起改
+py -3 migrate.py import --claude <c.zip> --remap-path "C:\Users\dell\Desktop\proj" "D:\work\proj"  # 工程挪到别的文件夹
 ```
+
+### 一键打包(换机傻瓜流程)
+
+双击桌面快捷方式「一键打包迁移包」(或直接跑 `打包.bat` / `py -3 pack_migration.py`):
+导出两者 + 工具源码 + 迁移说明,打成**一个** `ai-cli-迁移包-日期.zip` 放到桌面。
+新机解压,照包里的 `迁移说明.md` 跑 `import` 即可。
 
 导出得到两个包:`claude-backup-<时间戳>.zip`、`codex-backup-<时间戳>.zip`,默认就存在本工具目录(`ai-cli-migrate/`)下,已被 `.gitignore` 排除不会进仓库。两者都**不含登录凭证**,新机导入后各自重新 `/login`。
 
@@ -43,6 +51,10 @@ py -3 migrate.py import --claude <c.zip> --codex <x.zip> --remap-user dell alice
   - Claude:改写聊天记录目录名(按绝对路径编码)+ jsonl 内路径。
   - Codex:改写 `sessions/` 文本文件,以及 `*.sqlite` 里 `rollout_path`/`cwd`/`agent_path` 等**文本列**(走 SQL `UPDATE...REPLACE`,不是裸字节替换——后者会撑坏 SQLite 记录导致损坏)。Codex 的 `rollout_path` 是绝对路径,用户名变了不 remap 就找不到会话文件,所以这步是必要的。
   - 两者都只改 `Users<分隔符>用户名<分隔符>` 形态,不误伤同名词,也不碰非 Users 路径(如 D 盘项目)。
+- **工程路径搬迁(仅 Claude)**:用 `--remap-path OLD_PATH NEW_PATH`。Claude 的聊天记录/记忆
+  目录是按**工程绝对路径**编码命名的(`[^A-Za-z0-9]→-`),工程挪到别的文件夹后,新路径下
+  Claude 找不到旧历史;此参数把编码目录改名(含该工程的 worktree 子目录)并改写其中的旧路径。
+  Codex 历史不按路径归档,挪文件夹不影响关联,故不需要(其 cwd 字段改写见 `TODO.md`)。
 
 ## 单独使用某一个
 
@@ -54,7 +66,7 @@ py -3 codex_migrate.py export --out codex.zip   # 还支持 inspect 看清单
 ## 测试
 
 ```powershell
-py -3 -m pytest tests/test_codex_migrate.py -q
+py -3 -m pytest -q          # claude + codex 两套
 ```
 
 ## 安全提示
