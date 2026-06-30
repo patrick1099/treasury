@@ -91,7 +91,11 @@ def export_package(profile_path, package_path, force=False, include_logs=False):
         manifest = _build_manifest(profile, plain_files, snapshots, excluded, include_logs)
 
         package.parent.mkdir(parents=True, exist_ok=True)
-        with zipfile.ZipFile(package, "w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+        # strict_timestamps=False: 容忍插件缓存里 1970 时间戳的文件(钳到 1980),
+        # 否则 Python 3.14 的 zipfile 会对 pre-1980 时间戳直接抛 ValueError。
+        with zipfile.ZipFile(
+            package, "w", compression=zipfile.ZIP_DEFLATED, strict_timestamps=False
+        ) as zip_file:
             zip_file.writestr(
                 MANIFEST_NAME,
                 json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
