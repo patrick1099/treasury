@@ -139,7 +139,10 @@ def build_archive(dest_zip, include_history):
     """构建迁移包,返回包含项的清单列表。"""
     included = []
     skipped = []
-    with zipfile.ZipFile(dest_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+    # strict_timestamps=False: 见 codex_migrate,容忍 pre-1980 时间戳的文件。
+    with zipfile.ZipFile(
+        dest_zip, "w", zipfile.ZIP_DEFLATED, strict_timestamps=False
+    ) as zf:
         for item in iter_allowlist(include_history):
             src = CLAUDE_DIR / item["rel"]
             if not src.exists():
