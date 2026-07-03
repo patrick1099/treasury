@@ -8,6 +8,7 @@ claude_migrate.py —— 迁移 Claude Code 的全部个人数据(换电脑用)
 迁移范围(白名单,见 ALLOWLIST):
   settings.json / history.jsonl / skills/ / projects/(含 memory 与全部聊天记录)
   plugins 的清单 json + marketplaces/(让插件离线可用)
+  plugins-dev/(自研插件的开发源码,含各自 .git,解压即用不依赖 GitHub)
   .claude.json 里只抽 mcpServers(不整文件覆盖)
 
 绝不迁:
@@ -49,6 +50,9 @@ ALLOWLIST = [
     {"rel": "plugins/known_marketplaces.json", "dir": False, "optional": True},
     {"rel": "plugins/plugin-catalog-cache.json", "dir": False, "optional": True},
     {"rel": "plugins/marketplaces", "dir": True, "optional": True},
+    # 自研插件开发源(cjt/keil2clangd/xu-skills 等,含各自 .git 与未提交改动)。
+    # 整目录带 .git 一起打:恢复不依赖 GitHub,也不丢非 git 的子目录(如 docs)。
+    {"rel": "plugins-dev", "dir": True, "optional": True},
 ]
 
 # git-init 写入的 .gitignore 内容
