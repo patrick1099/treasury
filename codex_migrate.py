@@ -26,13 +26,16 @@ INCLUDE_DIRS = (
     "skills",
     "memories",
     "sessions",
+    "archived_sessions",  # 归档的历史会话(聊天记录,别漏)
     "attachments",
+    "generated_images",   # 会话中生成的图片(用户产物)
 )
 
 INCLUDE_FILES = (
     "config.toml",
     "session_index.jsonl",
     "models_cache.json",
+    ".personality_migration",  # 个性化迁移状态,体积极小,一并带上
 )
 
 # SQLite 库:只匹配主库文件(不含 -wal/-shm)。导出时用 backup API 做一致性快照,
