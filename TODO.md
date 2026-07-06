@@ -24,7 +24,7 @@ Codex 历史不按路径归档，挪文件夹不影响关联，只是 session/sq
 （纯外观）。后续可复用 `codex_migrate.py` 里的 `_remap_text_file` / `_remap_sqlite_paths`，
 把整段旧路径→新路径也改一遍，让显示一致。
 
-## 已知 bug（2026-07-06 真实换机实测发现，共 6 个，均未修复，靠手工修复绕过）
+## 已知 bug（2026-07-06 真实换机实测发现，共 7 个，均未修复，靠手工修复绕过）
 
 换机场景：旧机用户名 `dell` → 新机 `huawei`，工程文件夹同时也搬了（`dell` 下的中文路径 →
 `huawei` 下的 `MyProjects\20260525-xinao` 路径），即 `--remap-user`+`--remap-path` 同时用。
@@ -79,3 +79,19 @@ Codex 历史不按路径归档，挪文件夹不影响关联，只是 session/sq
    `rollout-YYYY-MM-DDTHH-MM-SS-...` 解析时间戳回填。**修法建议**：`export` 写 zip 时用
    `zinfo.date_time` 记录真实 mtime，`import` 解压后 `os.utime()` 回填，两处都别依赖复制/
    解压的默认行为。
+
+7. **手工修 `installed_plugins.json`/`known_marketplaces.json` 时用 PowerShell `Set-Content
+   -Encoding utf8` 写出了带 BOM 的文件，`/plugin` 直接崩**。Windows PowerShell 5.1 的
+   `-Encoding utf8`（`Out-File`/`Set-Content` 都一样）会在文件头加 UTF-8 BOM（`EF BB BF`），
+   跟 PowerShell Core 的 `utf8` 行为不同，5.1 也没有 `utf8NoBOM` 这个选项。这两个 JSON 文件
+   是本项目 bug #2 的手工修复对象，改的时候如果用了 `Set-Content -Encoding utf8`，BOM 就混进
+   JSON 开头，Claude Code 的 `/plugin` 走严格 `JSON.parse`，读到 BOM 直接报
+   `Unrecognized token '﻿'`，整个 marketplace 配置加载失败。**规避**：改这两个文件（或任何
+   会被严格解析器读取的文件）别用 `Set-Content -Encoding utf8`，改用：
+   ```powershell
+   $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+   [System.IO.File]::WriteAllText($path, $content, $utf8NoBom)
+   ```
+   改完用 `ConvertFrom-Json` 验证一遍。**跟本工具的关系**：`claude_migrate.py`/
+   `codex_migrate.py` 自身用 Python 写文件不会加 BOM，不受影响；这条纯粹是给"手工在 Windows
+   上patch这几个 json"的人（或 AI agent）的提醒，附带记在这里因为正好是同一批文件。
