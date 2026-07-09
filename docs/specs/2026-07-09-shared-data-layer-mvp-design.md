@@ -156,12 +156,15 @@ hub bootstrap 新机首次落地（被吸收的"迁移"场景，见 §9）
 | Claude Code | `~/.claude/projects/*/memory/*.md`（**排除** hub 生成的 memory-index 与 `~/.claude/hub/`）| 派生物，不 collect |
 | Codex | `~/.codex/memories/*` | 派生物，不 collect |
 
-**managed block**：所有 hub 生成/改写的文件，hub 负责的内容包在 `<!-- hub:begin -->…<!-- hub:end -->` 之间。collect/materialize **只动 block 内**；block 外是用户手写，hub 绝不碰、也绝不收。`sensitive:true` 的记忆即便出现在源目录也**跳过不收**。
+**managed block vs 原子文件**（别误读）：
+- **聚合/派生文件**（`AGENTS.md`、`CLAUDE.md`、`memory-index`）里 hub 负责的内容包在 `<!-- hub:begin -->…<!-- hub:end -->` 之间——materialize 只重写 block 内，block 外用户手写内容绝不碰。
+- **单条 `memory/*.md` 是原子文件**——collect/materialize 以**整文件**为单位处理，本身不需要 block。
+- `sensitive:true` 的记忆即便出现在源目录也**跳过不收**。
 
 ### 8.2 materialize 目标（`pull` 落地到哪）
 
 - **规则** → 金库 `rules/*.md` 合成 `AGENTS.md`（权威单一源）；`CLAUDE.md` 只写 `@AGENTS.md` 导入 + 少量 Claude 专属。（`@import` 在 Windows 比 symlink 稳。）
-- **记忆 · Codex** → 过滤+解析后直接落 `~/.codex/memories/`（用户级，简单）。
+- **记忆 · Codex**：`~/.codex/memories/` 是**用户级（跨工程可见）**，故只落 `global` / `device:*` / `tool:codex` 记忆；**`project:<id>` 记忆不进 `~/.codex/memories/`**，改写进目标工程 `<root>/AGENTS.md` 的 hub-managed 块（AGENTS.md 目录感知，Codex 仅在该工程读到 → 不跨工程泄漏）。
 - **记忆 · Claude**（解决"global 记忆往 Claude 哪落"的开口点）：Claude 无用户级记忆，但 `~/.claude/CLAUDE.md` 每会话必读且支持 `@import`。故：
   - `global` / `device:*` / `tool:claude` 记忆 → 生成一个 bundle `$CLAUDE_HOME/hub/memory-index.md`，并确保 `~/.claude/CLAUDE.md` 含 `@hub/memory-index.md` → 每个 Claude 会话全局可见；
   - `project:<id>` 记忆 → 当本机登记了该工程时（§8.3），落进对应 `~/.claude/projects/<编码路径>/memory/`（编码复用 migrate 的 `encode_project_path`）。
@@ -182,7 +185,7 @@ root    = "C:/Users/huawei/plugins-dev/cjt"
 
 `hub pull` 落地范围：
 - **用户级**（`global`/`device:*`/`tool:*` 记忆、Codex `~/.codex/memories/`、`~/.claude/CLAUDE.md` 的 memory-index 导入）→ 落一次。
-- **每个 target**：写 `<root>/AGENTS.md`（rules 派生）+ `<root>/CLAUDE.md`（`@AGENTS.md` + 该工程 scope 记忆）+ 把 `project:<id>` 记忆落进对应 Claude 工程 memory 目录。
+- **每个 target**：写 `<root>/AGENTS.md`（rules 派生 **+ 该工程 `project:<id>` 记忆的 managed 块，供 Codex**）+ `<root>/CLAUDE.md`（`@AGENTS.md` + 该工程 scope 记忆）+ 把 `project:<id>` 记忆落进对应 Claude 工程 memory 目录。
 - `hub pull --here`：只对**当前目录**落地（临时用，不改登记表）。
 
 ## 9. 与 migrate 的关系（吸收）
