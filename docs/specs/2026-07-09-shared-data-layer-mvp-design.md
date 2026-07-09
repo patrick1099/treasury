@@ -62,8 +62,9 @@ name: project_encoding_workflow
 description: <一行摘要，用于召回相关性判断>
 metadata:
   type: project | reference | feedback | user      # 沿用现有
-  scope: [global]                                    # 新增：作用域，见 §4.3
-  portable: true | false                             # 新增：是否引用了设备本地路径，见 §6
+  scope: [global]                                    # 新增：作用域谓词列表，见 §4.3
+  portable: true | false                             # 新增：引用设备本地路径? 只在能解析处落地，见 §6
+  sensitive: true | false                            # 新增：敏感? 为真则绝不 collect/入金库，见 §6
 ---
 <正文；[[slug]] 链接金库内其他记忆；外部引用用符号根 $VAULT/$SECRETS/$CLAUDE_HOME/…>
 ```
@@ -89,7 +90,13 @@ SECRETS     = "C:/Users/huawei/.claude/secrets"
 | `project:<id>` | 某工程专属 | 档案 `projects` 含该 id、或当前打开该工程时 |
 | `tool:<claude\|codex>` | 工具专属 | 仅落地给该工具 |
 
-`scope` 是**列表**（一条记忆可同时 `global` 属于某属性）。MVP 用集合成员判定过滤。
+**语义（消除歧义）**：`scope` 是谓词列表，按维度分组——`device:*` / `project:*` / `tool:*` 三个维度，外加特殊令牌 `global`。
+
+- **同维度多值 = OR**：`[device:work, device:home]` = 设备类 ∈ {work, home}。
+- **不同维度之间 = AND**：`[project:xinao, tool:claude]` = 「工程==xinao **且** 工具==claude」。→ 故 Claude 专属记忆**不会漏给 Codex**。
+- **某维度缺省 = 该维度不限**：只写 `[tool:claude]` = 任意设备、任意工程，但仅 Claude。
+- **`global` 必须单独出现**：等价"三维度全不限"；与任何 `device/project/tool` 谓词混用 = **linter 报错**。
+- **匹配判定**：目标 =（设备类集合, 当前工程, 工具）。一条记忆落到目标 ⇔ 对 scope 中**出现的每个维度**，目标在该维度的值命中 scope 该维度取值集合之一（缺省维度恒通过）。
 
 ## 5. 解决疑惑点①：设备相关性
 
@@ -111,6 +118,12 @@ SECRETS     = "C:/Users/huawei/.claude/secrets"
 - (c) 其余 → 改写成符号根。
 
 **落地时**，符号根用该设备档案 `[paths]` 表展开成真实路径（**复用 ai-cli-migrate 的 remap 实现**）。某设备未定义某符号根 → 那条**跳过并告警**，不产生断链。
+
+**两个正交的轴（别混）**：
+- `portable`：只关乎**路径**。`false` = 引用了设备本地路径；**可进金库**，但仅在能解析出路径的设备落地，别处跳过。
+- `sensitive`：只关乎**保密**。`true` = 含凭证/私密，**绝不 collect、绝不进金库**（连 push 都拦），与 `~/.claude/secrets/` 同级对待。
+
+两轴独立：可以 `portable:false` 且 `sensitive:false`（能进金库、只是路径设备相关），也可以 `sensitive:true`（压根不进金库）。§11 的"绝不出金库"专指 `sensitive:true`。
 
 ## 7. 免冲突结构（让"每台都能改 + 增量合并"天然无冲突）
 
@@ -134,12 +147,16 @@ hub status    本机 vs 金库差异、将落地什么
 hub bootstrap 新机首次落地（被吸收的"迁移"场景，见 §9）
 ```
 
-### 8.1 collect 源映射（`collect` 去哪扫）
+### 8.1 collect 源映射与回环防护
 
-| 工具 | 记忆源 | 规则源 |
-|------|--------|--------|
-| Claude Code | `~/.claude/projects/*/memory/*.md` | `~/.claude/CLAUDE.md`、各工程 `CLAUDE.md` |
-| Codex | `~/.codex/memories/*` | `AGENTS.md` |
+**collect 只收「记忆」，不收「规则」**——规则只在金库 `rules/*.md` 里手写。`AGENTS.md`、`CLAUDE.md`、Claude 的 `memory-index.md` 全是**派生物**，**永不 collect**（否则"刚生成又被收回金库"成回环）。
+
+| 工具 | 记忆源（collect 只扫这里） | 规则 |
+|------|-----------------------------|------|
+| Claude Code | `~/.claude/projects/*/memory/*.md`（**排除** hub 生成的 memory-index 与 `~/.claude/hub/`）| 派生物，不 collect |
+| Codex | `~/.codex/memories/*` | 派生物，不 collect |
+
+**managed block**：所有 hub 生成/改写的文件，hub 负责的内容包在 `<!-- hub:begin -->…<!-- hub:end -->` 之间。collect/materialize **只动 block 内**；block 外是用户手写，hub 绝不碰、也绝不收。`sensitive:true` 的记忆即便出现在源目录也**跳过不收**。
 
 ### 8.2 materialize 目标（`pull` 落地到哪）
 
@@ -147,14 +164,33 @@ hub bootstrap 新机首次落地（被吸收的"迁移"场景，见 §9）
 - **记忆 · Codex** → 过滤+解析后直接落 `~/.codex/memories/`（用户级，简单）。
 - **记忆 · Claude**（解决"global 记忆往 Claude 哪落"的开口点）：Claude 无用户级记忆，但 `~/.claude/CLAUDE.md` 每会话必读且支持 `@import`。故：
   - `global` / `device:*` / `tool:claude` 记忆 → 生成一个 bundle `$CLAUDE_HOME/hub/memory-index.md`，并确保 `~/.claude/CLAUDE.md` 含 `@hub/memory-index.md` → 每个 Claude 会话全局可见；
-  - `project:<id>` 记忆 → 当本机存在该工程时，落进对应 `~/.claude/projects/<编码路径>/memory/`。
+  - `project:<id>` 记忆 → 当本机登记了该工程时（§8.3），落进对应 `~/.claude/projects/<编码路径>/memory/`（编码复用 migrate 的 `encode_project_path`）。
+
+### 8.3 落地目标登记（规则/工程记忆写去哪）
+
+Codex 的 `AGENTS.md` 是**目录/工程感知**的，故 `hub pull` 不能瞎写。落地目标在 `devices/<host>.toml` 显式登记：
+
+```toml
+[[targets]]                # 每个已登记工程一条
+project = "xinao"
+root    = "C:/Users/huawei/Desktop/MyProjects/20260525-xinao/Code"
+
+[[targets]]
+project = "cjt"
+root    = "C:/Users/huawei/plugins-dev/cjt"
+```
+
+`hub pull` 落地范围：
+- **用户级**（`global`/`device:*`/`tool:*` 记忆、Codex `~/.codex/memories/`、`~/.claude/CLAUDE.md` 的 memory-index 导入）→ 落一次。
+- **每个 target**：写 `<root>/AGENTS.md`（rules 派生）+ `<root>/CLAUDE.md`（`@AGENTS.md` + 该工程 scope 记忆）+ 把 `project:<id>` 记忆落进对应 Claude 工程 memory 目录。
+- `hub pull --here`：只对**当前目录**落地（临时用，不改登记表）。
 
 ## 9. 与 migrate 的关系（吸收）
 
 - **hub 是产品**；`ai-cli-migrate` 的内脏（存储位置知识、SQLite 安全快照、path/user remap、plugin-json 手术）降级为 hub 的底层工具箱。
 - "搬到新电脑" = `hub bootstrap`（首次在一台新 spoke 落地）+ 离线 zip 兜底（NAS 够不到时的传输）。
 - **对话的"活态恢复"**（带 remap + mtime 修复 + sqlite 一致性）仍归 migrate 能力，MVP 不涉及，作为 `bootstrap`/离线路径的一部分保留。
-- 待定（实现期确认）：仓库是就地演进为 hub，还是 `migrate` 保留为独立子命令族。工作假设=吸收。
+- **包结构（现在拍定，不拖到实现期）**：新增 `hub/` 包，把 `claude_migrate.py` / `codex_migrate.py` 的可复用内脏当**库 import**（它们已是模块）。`migrate.py` 作为薄壳保留、向后兼容（等价 `hub migrate`）。`hub bootstrap` 直接调这些库，不重写 migrate 逻辑。即 **hub 包 + migrate 降为其一个子命令/薄入口**。
 
 ## 10. 明确不在 MVP（排队）
 
@@ -166,10 +202,10 @@ hub bootstrap 新机首次落地（被吸收的"迁移"场景，见 §9）
 ## 11. 错误处理与安全
 
 - 符号根未定义 → 跳过该条 + 告警，不断链、不写坏文件。
-- 凭证/cache/`portable:false` 且无匹配设备 → 绝不出金库/绝不落地。
-- 落地前对目标文件做备份（复用 migrate 的"导入前自动备份"）。
+- `sensitive:true` → 绝不 collect / 入金库（连 push 都拦）；`portable:false` 且本机无法解析其路径 → 可在金库、但本机跳过落地。两者是不同的轴（§6）。
+- **`hub sync` 遇 git 冲突**：立即**停止**，打印冲突文件路径，**禁止 materialize**，提示用户手工解决后 `hub sync --continue` 再继续。不自造合并引擎（理论上冲突仅可能落在 `rules/*` 同文件并发）。
+- 落地前对目标文件备份（复用 migrate 的"导入前自动备份"）；managed block **外**的用户内容绝不覆盖。
 - Windows 写 JSON/被严格解析的文件用 UTF-8 **无 BOM**（migrate TODO bug #7 教训）。
-- git 合并冲突（理论上仅 `rules/*` 同文件并发）→ 交给 git 标准冲突流程，不自造合并引擎。
 
 ## 12. 测试策略
 
@@ -180,6 +216,11 @@ hub bootstrap 新机首次落地（被吸收的"迁移"场景，见 §9）
 
 ## 13. 开放问题（实现期决）
 
-1. §9 待定：就地演进 vs 独立子命令族。
-2. `hub push` 的"改动分类"：本机新记忆默认 scope 如何推断（交互确认 / 规则推断 / 一律 draft 待人工打标）。
-3. `project:<id>` 的 id 与 Claude 工程编码路径的映射登记方式。
+1. `hub push` 的"改动分类"：本机新记忆默认 scope 如何推断（交互确认 / 规则推断 / 一律 draft 待人工打标）。
+2. 新工程如何进 `[[targets]]` 登记（§8.3 已定结构）：手动填 vs `collect` 时自动侦测并提示。
+
+## 14. 依赖与运行环境
+
+- **纯标准库，无第三方依赖**（沿用个人 AI-python 约定；Windows 用 `py -3`）。
+- **TOML 读取用 `tomllib` → 要求 Python ≥ 3.11**。实施计划第一步先确认本机 `py -3` 版本；低于 3.11 则内置一个极小 TOML 子集读取器（或退化用 `.ini`）。只读不写 TOML。
+- **YAML frontmatter 限定为极小子集**，自己解析、不引 PyYAML：仅 `key: value`、一层嵌套（`metadata:` 下缩进）、内联列表 `[a, b]`。超出子集 → linter 报错要求收敛；金库内所有记忆 frontmatter 必须落在此子集。
