@@ -27,6 +27,14 @@ def test_claude_md_imports():
     assert "@hub/memory-index.md" in inner
     assert "手写" in out
 
+def test_claude_md_agents_only_when_no_import():
+    # 工程级 CLAUDE.md 不应产出悬空的 @hub/memory-index.md 导入（该文件只在 CLAUDE_HOME 落地）
+    out = render_claude_md("手写\n")
+    inner = extract_block(out)
+    assert "@AGENTS.md" in inner
+    assert "@hub/memory-index.md" not in out
+    assert "手写" in out
+
 
 def _mem(name, scope, body="正文", sensitive=False):
     return Memory(name=name, description=name, type="project",

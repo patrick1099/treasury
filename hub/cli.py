@@ -34,7 +34,7 @@ def _cmd_process(args) -> int:
             print("  -", e)
         return 1
     _write(vault_root / "MEMORY.md", render_memory_index(vault.memories))
-    GitBackend(vault_root).publish("chore(hub): process 重生成索引")
+    GitBackend(vault_root).publish("chore(hub): process 重生成索引", push=False)
     return 0
 
 def _cmd_pull(args) -> int:
@@ -67,7 +67,7 @@ def _cmd_pull(args) -> int:
         _write(agents_path, render_agents_md(existing, vault.rules, inner))
         claude_path = root / "CLAUDE.md"
         c_existing = claude_path.read_text(encoding="utf-8") if claude_path.exists() else ""
-        _write(claude_path, render_claude_md(c_existing, "hub/memory-index.md"))
+        _write(claude_path, render_claude_md(c_existing))
         cl_home = dev.paths.get("CLAUDE_HOME")
         if cl_home:
             materialize_claude_project(vault.memories, t.project, t.root,

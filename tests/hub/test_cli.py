@@ -35,6 +35,15 @@ def test_process_regenerates_index_and_commits(tmp_path):
     assert (vault / "MEMORY.md").exists()
     assert "m1" in (vault / "MEMORY.md").read_text(encoding="utf-8")
 
+def test_process_offline_remote_does_not_crash(tmp_path):
+    # 生产场景：金库总是 clone 自 NAS(总有 origin)；离线时 process 绝不能因 push 失败而崩溃
+    vault = tmp_path / "vault"; _mk_vault(vault, "h1"); _init_git(vault)
+    subprocess.run(["git", "remote", "add", "origin", str(tmp_path / "nonexistent-remote")],
+                   cwd=vault, check=True, capture_output=True, text=True)
+    rc = main(["process", "--vault", str(vault), "--host", "h1"])
+    assert rc == 0
+    assert (vault / "MEMORY.md").exists()
+
 def test_pull_materializes_agents_md(tmp_path):
     vault = tmp_path / "vault"; tgt = _mk_vault(vault, "h1"); _init_git(vault)
     rc = main(["pull", "--vault", str(vault), "--host", "h1"])
