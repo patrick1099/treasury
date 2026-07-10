@@ -1,11 +1,15 @@
 import subprocess
 from pathlib import Path
 from hub.cli import main
+from hub.backend import GitBackend
 
 def _init_git(repo):
     for args in (["init", "-q"], ["config", "user.email", "t@t"],
                  ["config", "user.name", "t"]):
         subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True)
+
+def _git(repo, *args):
+    subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True)
 
 def _mk_vault(root: Path, host: str):
     (root / "rules").mkdir(parents=True)
@@ -47,6 +51,38 @@ def test_process_blocks_sensitive(tmp_path):
     rc = main(["process", "--vault", str(vault), "--host", "h1"])
     assert rc == 1                       # 敏感记忆混入 -> lint 拦停，不生成索引
     assert not (vault / "MEMORY.md").exists()
+
+def test_sync_success_publishes(tmp_path):
+    vault = tmp_path / "vault"; _mk_vault(vault, "h1"); _init_git(vault)
+    rc = main(["sync", "--vault", str(vault), "--host", "h1"])
+    assert rc == 0
+    assert GitBackend(vault).status().strip() == ""
+
+def test_sync_lint_failure_returns_1(tmp_path):
+    vault = tmp_path / "vault"; _mk_vault(vault, "h1"); _init_git(vault)
+    (vault / "memory" / "sec.md").write_text(
+        "---\nname: sec\ndescription: d\nmetadata:\n  type: project\n"
+        "  scope: [global]\n  portable: true\n  sensitive: true\n---\n密\n",
+        encoding="utf-8")
+    rc = main(["sync", "--vault", str(vault), "--host", "h1"])
+    assert rc == 1
+
+def test_sync_conflict_returns_2(tmp_path):
+    # 远端与本地 clone 在同一文件(vault.toml)分叉 -> acquire 内 git pull 非 ff 冲突 -> sync 返回 2
+    remote = tmp_path / "remote"; _mk_vault(remote, "h1"); _init_git(remote)
+    _git(remote, "add", "-A"); _git(remote, "commit", "-qm", "seed")
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "clone", "-q", str(remote), str(clone)], check=True,
+                   capture_output=True, text=True)
+    _git(clone, "config", "user.email", "t@t"); _git(clone, "config", "user.name", "t")
+    # 远端前进一步
+    (remote / "vault.toml").write_text("version = 2\n", encoding="utf-8")
+    _git(remote, "commit", "-qam", "remote change")
+    # clone 本地也改同文件并提交 -> 分叉
+    (clone / "vault.toml").write_text("version = 3\n", encoding="utf-8")
+    _git(clone, "commit", "-qam", "local change")
+    rc = main(["sync", "--vault", str(clone), "--host", "h1"])
+    assert rc == 2
 
 def test_collect_pulls_into_vault(tmp_path):
     vault = tmp_path / "vault"; _mk_vault(vault, "h1")
