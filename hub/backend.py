@@ -9,7 +9,7 @@ class Backend(ABC):
     @abstractmethod
     def acquire(self) -> None: ...
     @abstractmethod
-    def publish(self, message: str) -> None: ...
+    def publish(self, message: str, push: bool = True) -> None: ...
     @abstractmethod
     def status(self) -> str: ...
 
@@ -39,11 +39,11 @@ class GitBackend(Backend):
                 raise ConflictError("git merge 冲突，需手工解决:\n" + "\n".join(conflicted))
             raise ConflictError(f"git pull 失败:\n{r.stderr or r.stdout}")
 
-    def publish(self, message: str) -> None:
+    def publish(self, message: str, push: bool = True) -> None:
         self._run("add", "-A")
         if self._run("status", "--porcelain").stdout.strip():
             self._run("commit", "-m", message)
-        if self._has_remote():
+        if push and self._has_remote():
             r = self._run("push", check=False)
             if r.returncode != 0:
                 raise ConflictError(f"git push 失败:\n{r.stderr or r.stdout}")

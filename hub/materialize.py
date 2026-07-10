@@ -15,8 +15,10 @@ def render_agents_md(existing: str, rules: list[tuple[str, str]],
     inner = "\n\n".join(parts)
     return replace_block(existing, inner)
 
-def render_claude_md(existing: str, memory_index_import: str) -> str:
-    inner = f"@AGENTS.md\n@{memory_index_import}"
+def render_claude_md(existing: str, memory_index_import: str | None = None) -> str:
+    inner = "@AGENTS.md"
+    if memory_index_import:
+        inner += f"\n@{memory_index_import}"
     return replace_block(existing, inner)
 
 def select_for_target(memories: list[Memory], target: Target) -> list[Memory]:

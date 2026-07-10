@@ -61,3 +61,28 @@ def test_acquire_merges_nonconflicting_changes(tmp_path):
     _git(clone, "add", "-A"); _git(clone, "commit", "-qm", "local b")
     GitBackend(clone).acquire()             # 不应抛
     assert (clone / "a.md").exists() and (clone / "b.md").exists()
+
+def test_publish_push_false_commits_without_pushing(tmp_path):
+    # process 场景：push=False 时只本地提交，远端 HEAD 不应变化（离线优先）
+    remote = tmp_path / "remote"; _init_repo(remote)
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "clone", "-q", str(remote), str(clone)], check=True,
+                   capture_output=True, text=True)
+    _git(clone, "config", "user.email", "t@t"); _git(clone, "config", "user.name", "t")
+    remote_head_before = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=remote, check=True,
+        capture_output=True, text=True).stdout.strip()
+    clone_head_before = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=clone, check=True,
+        capture_output=True, text=True).stdout.strip()
+    (clone / "local.md").write_text("local only\n", encoding="utf-8")
+    GitBackend(clone).publish("local only", push=False)
+    clone_head_after = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=clone, check=True,
+        capture_output=True, text=True).stdout.strip()
+    remote_head_after = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=remote, check=True,
+        capture_output=True, text=True).stdout.strip()
+    assert clone_head_after != clone_head_before      # 本地提交了
+    assert GitBackend(clone).status().strip() == ""   # 工作区干净
+    assert remote_head_after == remote_head_before    # 远端未被 push
