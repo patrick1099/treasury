@@ -1258,8 +1258,11 @@ def test_collect_pulls_into_vault(tmp_path):
         "  scope: [global]\n  portable: true\n  sensitive: false\n---\n正文\n",
         encoding="utf-8")
     dev_toml = vault / "devices" / "h1.toml"
-    dev_toml.write_text(dev_toml.read_text(encoding="utf-8")
-                        + f'\ncollect_sources = ["{src.as_posix()}"]\n', encoding="utf-8")
+    # 必须插在第一个表头([paths]/[[targets]])之前——TOML 会把表头之后追加的
+    # 裸键归到那个表里而非文档根,直接追加会落进 [[targets]]。
+    content = dev_toml.read_text(encoding="utf-8").replace(
+        "\n[paths]", f'\ncollect_sources = ["{src.as_posix()}"]\n\n[paths]', 1)
+    dev_toml.write_text(content, encoding="utf-8")
     rc = main(["collect", "--vault", str(vault), "--host", "h1"])
     assert rc == 0
     assert (vault / "memory" / "newmem.md").exists()
