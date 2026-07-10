@@ -67,3 +67,17 @@ def write_codex_user_memories(memories: list[Memory], paths: dict[str, str],
 
 def ensure_user_claude_import(existing: str, import_target: str) -> str:
     return replace_block(existing, f"@{import_target}")
+
+from claude_migrate import encode_project_path
+
+def materialize_claude_project(memories: list[Memory], project: str,
+                               project_root: str, claude_home: Path,
+                               device_classes: list[str]) -> Path:
+    target = Target(frozenset(device_classes), project, "claude")
+    mem_dir = Path(claude_home) / "projects" / encode_project_path(str(project_root)) / "memory"
+    mem_dir.mkdir(parents=True, exist_ok=True)
+    for m in select_for_target(memories, target):
+        if f"project:{project}" not in m.scope:
+            continue
+        (mem_dir / f"{m.name}.md").write_text(dump_memory(m), encoding="utf-8", newline="\n")
+    return mem_dir
