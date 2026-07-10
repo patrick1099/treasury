@@ -39,6 +39,15 @@ def test_acquire_conflict_raises(tmp_path):
     with pytest.raises(ConflictError):
         GitBackend(clone).acquire()
 
+def test_publish_handles_chinese_commit_message(tmp_path):
+    # 中文提交说明在 Windows cp936 环境下不应触发 UnicodeDecodeError，且能正常回读
+    repo = tmp_path / "clone"; _init_repo(repo)
+    b = GitBackend(repo)
+    (repo / "cn.md").write_text("中文内容\n", encoding="utf-8")
+    b.publish("测试中文提交说明")
+    result = b._run("log", "-1", "--format=%s")
+    assert "测试中文提交说明" in result.stdout
+
 def test_acquire_merges_nonconflicting_changes(tmp_path):
     # 对等场景：远端与本地各自新增【不同文件】-> 应自动 merge，不抛
     remote = tmp_path / "remote"; _init_repo(remote)

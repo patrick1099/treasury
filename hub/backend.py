@@ -19,7 +19,8 @@ class GitBackend(Backend):
 
     def _run(self, *args: str, check: bool = True) -> subprocess.CompletedProcess:
         return subprocess.run(["git", *args], cwd=self.repo, check=check,
-                              capture_output=True, text=True)
+                              capture_output=True, text=True,
+                              encoding="utf-8", errors="replace")
 
     def _has_remote(self) -> bool:
         return self._run("remote", check=False).stdout.strip() != ""
