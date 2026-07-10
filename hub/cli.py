@@ -5,7 +5,8 @@ from hub.derive import render_memory_index
 from hub.scope import lint_scope
 from hub.links import lint_raw_paths
 from hub.materialize import (render_agents_md, render_claude_md,
-                             select_for_target, codex_project_inner)
+                             select_for_target, codex_project_inner,
+                             materialize_claude_project)
 from hub.model import Target
 from hub.backend import GitBackend, ConflictError
 from hub.collect import collect_memories
@@ -67,6 +68,10 @@ def _cmd_pull(args) -> int:
         claude_path = root / "CLAUDE.md"
         c_existing = claude_path.read_text(encoding="utf-8") if claude_path.exists() else ""
         _write(claude_path, render_claude_md(c_existing, "hub/memory-index.md"))
+        cl_home = dev.paths.get("CLAUDE_HOME")
+        if cl_home:
+            materialize_claude_project(vault.memories, t.project, t.root,
+                                       Path(cl_home), dev.classes)
     return 0
 
 def _cmd_status(args) -> int:

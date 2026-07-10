@@ -85,3 +85,15 @@ def test_ensure_user_claude_import_idempotent():
     twice = ensure_user_claude_import(once, "hub/memory-index.md")
     assert twice.count("@hub/memory-index.md") == 1
     assert "我的手写" in twice
+
+def test_materialize_claude_project_lands_in_encoded_dir(tmp_path):
+    from hub.materialize import materialize_claude_project
+    from claude_migrate import encode_project_path
+    home = tmp_path / "claude"
+    root = "C:/proj/x"
+    mems = [_mem("pj", ["project:xinao"], body="坑\n"),
+            _mem("g", ["global"], body="全局\n")]
+    mem_dir = materialize_claude_project(mems, "xinao", root, home, ["work"])
+    assert mem_dir.parent.name == encode_project_path(root)   # 目录名编码一致
+    assert (mem_dir / "pj.md").exists()       # 项目级落地
+    assert not (mem_dir / "g.md").exists()    # 全局不进工程目录
