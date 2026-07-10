@@ -35,3 +35,10 @@ class Target:
 @dataclass
 class VaultConfig:
     version: int
+
+@dataclass
+class Vault:
+    root: "Path"
+    config: VaultConfig
+    memories: list[Memory]
+    rules: list[tuple[str, str]]
