@@ -42,6 +42,18 @@ def _cmd_pull(args) -> int:
     vault = load_vault(vault_root)
     dev = load_device(vault_root, host)
     GitBackend(vault_root).acquire()
+    from hub.materialize import (write_claude_index, write_codex_user_memories,
+                                 ensure_user_claude_import)
+    claude_home = dev.paths.get("CLAUDE_HOME")
+    if claude_home:
+        write_claude_index(vault.memories, dev.paths, Path(claude_home), dev.classes)
+        cpath = Path(claude_home) / "CLAUDE.md"
+        cexist = cpath.read_text(encoding="utf-8") if cpath.exists() else ""
+        _write(cpath, ensure_user_claude_import(cexist, "hub/memory-index.md"))
+    codex_home = dev.paths.get("CODEX_HOME")
+    if codex_home:
+        write_codex_user_memories(vault.memories, dev.paths,
+                                  Path(codex_home) / "memories", dev.classes)
     for t in dev.targets:
         root = Path(t.root)
         # Codex 项目记忆块

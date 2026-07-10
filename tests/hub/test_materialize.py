@@ -50,3 +50,38 @@ def test_bundle_resolves_symbols_and_marks_missing():
 def test_codex_project_inner_wraps():
     inner = codex_project_inner([_mem("p", ["project:xinao"], body="坑\n")], {})
     assert "坑" in inner
+
+from pathlib import Path
+from hub.materialize import write_claude_index, write_codex_user_memories
+
+def test_write_claude_index_bundle(tmp_path):
+    home = tmp_path / "claude"
+    mems = [_mem("g", ["global"], body="看 $VAULT/a\n")]
+    out = write_claude_index(mems, {"VAULT": "Z:/v"}, home, ["work"])
+    assert out == home / "hub" / "memory-index.md"
+    assert "Z:/v/a" in out.read_text(encoding="utf-8")
+
+def test_write_claude_index_matches_device_scope(tmp_path):
+    # device:work 记忆：本机 class 含 work 才应命中（回归 Target 丢 classes 的 bug）
+    home = tmp_path / "claude"
+    mems = [_mem("w", ["device:work"], body="仅公司机\n")]
+    got = write_claude_index(mems, {}, home, ["work"]).read_text(encoding="utf-8")
+    assert "仅公司机" in got
+    home2 = tmp_path / "claude2"
+    got2 = write_claude_index(mems, {}, home2, ["home"]).read_text(encoding="utf-8")
+    assert "仅公司机" not in got2
+
+def test_write_codex_user_skips_project_scoped(tmp_path):
+    d = tmp_path / "codexmem"
+    mems = [_mem("g", ["global"]), _mem("p", ["project:xinao"])]
+    written = write_codex_user_memories(mems, {}, d, ["work"])
+    assert written == ["g"]                 # project 级不进用户目录
+    assert (d / "g.md").exists()
+    assert not (d / "p.md").exists()
+
+def test_ensure_user_claude_import_idempotent():
+    from hub.materialize import ensure_user_claude_import
+    once = ensure_user_claude_import("我的手写\n", "hub/memory-index.md")
+    twice = ensure_user_claude_import(once, "hub/memory-index.md")
+    assert twice.count("@hub/memory-index.md") == 1
+    assert "我的手写" in twice
