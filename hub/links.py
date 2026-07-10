@@ -1,7 +1,7 @@
 import re
 
 # 盘符绝对路径 C:\ 或 C:/ ；UNC \\host\ ；POSIX 绝对 /a/b（排除行内 http:// 之类由前置空白/行首约束）
-_ABS = re.compile(r"(?<![\w$])(?:[A-Za-z]:[\\/]|\\\\[^\s]|/[A-Za-z0-9_.]+/)[^\s)>\]]*")
+_ABS = re.compile(r"(?<![\w$:/])(?:[A-Za-z]:[\\/]|\\\\[^\s]|/[A-Za-z0-9_.]+/)[^\s)>\]]*")
 _SYM = re.compile(r"\$([A-Z][A-Z0-9_]*)(/[^\s)>\]]*)?")
 
 def lint_raw_paths(body: str) -> list[str]:
