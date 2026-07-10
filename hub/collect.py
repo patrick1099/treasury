@@ -14,11 +14,11 @@ def collect_memories(source_dirs: list[Path], vault_memory_dir: Path) -> list[st
                 continue
             try:
                 m = load_memory(p)
-            except FrontmatterError:
+            except (FrontmatterError, UnicodeDecodeError, OSError):
                 continue
             if m.sensitive:
                 continue
             (vault_memory_dir / f"{m.name}.md").write_text(
-                dump_memory(m), encoding="utf-8")
+                dump_memory(m), encoding="utf-8", newline="\n")
             collected.append(m.name)
     return collected
