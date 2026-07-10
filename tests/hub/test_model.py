@@ -1,9 +1,3 @@
-import sys
-from pathlib import Path
-
-TOOL_DIR = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(TOOL_DIR))
-
 from hub.model import Memory, Target, DeviceProfile, ProjectTarget, VaultConfig
 
 def test_memory_defaults():

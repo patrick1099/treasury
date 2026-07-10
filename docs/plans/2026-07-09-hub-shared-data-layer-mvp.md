@@ -150,7 +150,7 @@ Expected: PASS（2 passed）。
 - [ ] **Step 6: 提交**
 
 ```bash
-git add hub/__init__.py hub/model.py tests/hub/__init__.py tests/hub/test_model.py
+git add hub/__init__.py hub/model.py pytest.ini tests/hub/test_model.py
 git commit -m "feat(hub): 包骨架 + 数据模型 dataclasses"
 ```
 
