@@ -51,7 +51,8 @@ ai-cli-migrate/
 ### Task 1: 包骨架 + Python 版本门槛 + 数据模型
 
 **Files:**
-- Create: `hub/__init__.py`, `hub/model.py`, `tests/hub/__init__.py`, `tests/hub/test_model.py`
+- Create: `hub/__init__.py`, `hub/model.py`, `tests/hub/test_model.py`, `pytest.ini`
+- 注意：**不要**建 `tests/hub/__init__.py`——它会让 pytest 把 `tests/hub` 当顶层包 `hub` 导入、遮蔽真实 `hub/`。改为提交 `pytest.ini`（`pythonpath = .`、`testpaths = tests`）解决导入。
 
 **Interfaces:**
 - Produces: dataclasses `Memory(name:str, description:str, type:str, scope:list[str], portable:bool, sensitive:bool, body:str, path:Path|None=None)`；`Target(device_classes:frozenset[str], project:str|None, tool:str)`；`ProjectTarget(project:str, root:str)`；`DeviceProfile(host:str, classes:list[str], projects:list[str], paths:dict[str,str], targets:list[ProjectTarget], collect_sources:list[str])`；`VaultConfig(version:int)`。
@@ -134,8 +135,11 @@ class Target:
 class VaultConfig:
     version: int
 ```
-```python
-# tests/hub/__init__.py  (空文件)
+```ini
+# pytest.ini  (提交此文件；不建 tests/hub/__init__.py)
+[pytest]
+pythonpath = .
+testpaths = tests
 ```
 
 - [ ] **Step 5: 运行验证通过**
