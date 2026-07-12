@@ -77,7 +77,8 @@ def load_memory(path: Path) -> Memory:
 def _fmt_list(xs: list[str]) -> str:
     return "[" + ", ".join(xs) + "]"
 
-def dump_memory(m: Memory) -> str:
+def dump_memory(m: Memory, body: str | None = None) -> str:
+    """序列化一条记忆。body 给了就用它替代 m.body(落地时用符号根展开后的正文)。"""
     lines = [
         "---",
         f"name: {m.name}",
@@ -89,5 +90,7 @@ def dump_memory(m: Memory) -> str:
         f"  sensitive: {str(m.sensitive).lower()}",
         "---",
     ]
-    body = m.body if m.body.endswith("\n") else m.body + "\n"
-    return "\n".join(lines) + "\n" + body
+    b = m.body if body is None else body
+    if not b.endswith("\n"):
+        b += "\n"
+    return "\n".join(lines) + "\n" + b

@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 
+SHARED = "shared"           # 公共池，与各设备文件夹同级；所有设备无条件落地
+
 @dataclass
 class Memory:
     name: str
@@ -11,6 +13,8 @@ class Memory:
     sensitive: bool
     body: str
     path: Path | None = None
+    # 来源 = 金库顶层的归属文件夹名：SHARED 或某台设备的 host。
+    origin: str | None = None
 
 @dataclass
 class ProjectTarget:
