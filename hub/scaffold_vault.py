@@ -7,7 +7,7 @@
 - --host 省略时用本机 hostname(小写),与 hub CLI 的默认一致。
 - --git 顺带 git init + 首次提交(process/sync 需要金库是 git 仓)。
 
-生成后编辑 devices/<host>.toml 里标了 TODO 的项,再跑:
+生成后编辑 <host>/device.toml 里标了 TODO 的项,再跑:
     py -3 -m hub.cli collect --vault <金库目录> --host <主机名>
     py -3 -m hub.cli process --vault <金库目录> --host <主机名>
     py -3 -m hub.cli pull    --vault <金库目录> --host <主机名>
@@ -17,6 +17,7 @@ import socket
 import subprocess
 import sys
 from pathlib import Path
+from hub.model import SHARED
 
 _VAULT_TOML = "version = 1\n"
 
@@ -50,6 +51,8 @@ def _device_toml(vault: Path, host: str) -> str:
         f'projects = []               # TODO: 例如 ["xinao"]\n'
         f'\n'
         f'# collect 会扫这些目录里的 *.md 记忆收进金库(跳过敏感/派生)。\n'
+        f'# 只有 Claude 有人写的记忆文件;Codex 没有可收的源(它的记忆是 sqlite 内部流水线),\n'
+        f'# 故 Codex 是单向接收方——经 ~/.codex/AGENTS.md 落地。\n'
         f'collect_sources = [         # TODO: 填本机工具的记忆目录\n'
         f'    # "{(home / ".claude" / "projects").as_posix()}/<工程编码>/memory",\n'
         f']\n'
@@ -72,13 +75,22 @@ def _device_toml(vault: Path, host: str) -> str:
 def scaffold(vault: Path, host: str, do_git: bool, force: bool) -> None:
     if vault.exists() and any(vault.iterdir()) and not force:
         raise SystemExit(f"目录非空,拒绝覆盖(加 --force 强制):{vault}")
-    for sub in ("rules", "memory", "devices"):
+    # 顶层按归属切:shared/ 是公共池(所有设备无条件拿),<host>/ 是这台设备的全部家当。
+    # skills/plugins/chats 先占位,分发逻辑不在 MVP。
+    for sub in (f"{SHARED}/rules", f"{SHARED}/memory", f"{SHARED}/skills", f"{SHARED}/plugins",
+                f"{host}/memory", f"{host}/skills", f"{host}/plugins", f"{host}/chats"):
         (vault / sub).mkdir(parents=True, exist_ok=True)
     (vault / "vault.toml").write_text(_VAULT_TOML, encoding="utf-8", newline="\n")
-    (vault / "rules" / "00_sample.md").write_text(_SAMPLE_RULE, encoding="utf-8", newline="\n")
-    (vault / "memory" / "sample_note.md").write_text(_SAMPLE_MEMORY, encoding="utf-8", newline="\n")
-    dev = vault / "devices" / f"{host}.toml"
+    (vault / SHARED / "rules" / "00_sample.md").write_text(
+        _SAMPLE_RULE, encoding="utf-8", newline="\n")
+    (vault / SHARED / "memory" / "sample_note.md").write_text(
+        _SAMPLE_MEMORY, encoding="utf-8", newline="\n")
+    dev = vault / host / "device.toml"
     dev.write_text(_device_toml(vault, host), encoding="utf-8", newline="\n")
+    # git 不跟踪空目录,占位目录靠 .gitkeep 留住
+    for sub in (f"{SHARED}/skills", f"{SHARED}/plugins",
+                f"{host}/skills", f"{host}/plugins", f"{host}/chats"):
+        (vault / sub / ".gitkeep").write_text("", encoding="utf-8")
 
     if do_git:
         def git(*a: str) -> None:

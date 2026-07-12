@@ -60,32 +60,37 @@ def test_codex_project_inner_wraps():
     assert "坑" in inner
 
 from pathlib import Path
-from hub.materialize import write_claude_index, write_codex_user_memories
+from hub.materialize import (render_codex_global_agents, render_index,
+                             resolved_body, select_user_level)
 
-def test_write_claude_index_bundle(tmp_path):
-    home = tmp_path / "claude"
-    mems = [_mem("g", ["global"], body="看 $VAULT/a\n")]
-    out = write_claude_index(mems, {"VAULT": "Z:/v"}, home, ["work"])
-    assert out == home / "hub" / "memory-index.md"
-    assert "Z:/v/a" in out.read_text(encoding="utf-8")
+def test_index_carries_summary_not_full_body():
+    # 关键约束：上下文里只放索引，正文按需读。全文拼进去 = 每个会话吃 85KB。
+    m = _mem("g", ["global"], body="很长很长的正文" * 100)
+    m.description = "一句话摘要"
+    out = render_index([m], "C:/x/hub/memory")
+    assert "一句话摘要" in out
+    assert "C:/x/hub/memory" in out               # 指出正文在哪个目录（说一次，不每行重复）
+    assert "很长很长的正文" not in out             # 正文绝不进索引
 
-def test_write_claude_index_matches_device_scope(tmp_path):
-    # device:work 记忆：本机 class 含 work 才应命中（回归 Target 丢 classes 的 bug）
-    home = tmp_path / "claude"
-    mems = [_mem("w", ["device:work"], body="仅公司机\n")]
-    got = write_claude_index(mems, {}, home, ["work"]).read_text(encoding="utf-8")
-    assert "仅公司机" in got
-    home2 = tmp_path / "claude2"
-    got2 = write_claude_index(mems, {}, home2, ["home"]).read_text(encoding="utf-8")
-    assert "仅公司机" not in got2
+def test_user_level_selection_matches_scope_and_skips_project():
+    mems = [_mem("g", ["global"]), _mem("w", ["device:work"]),
+            _mem("p", ["project:xinao"])]
+    got = {m.name for m in select_user_level(mems, ["work"], "claude")}
+    assert got == {"g", "w"}                      # 工程专属不进用户级(会跨工程泄漏)
+    assert {m.name for m in select_user_level(mems, ["home"], "claude")} == {"g"}
 
-def test_write_codex_user_skips_project_scoped(tmp_path):
-    d = tmp_path / "codexmem"
-    mems = [_mem("g", ["global"]), _mem("p", ["project:xinao"])]
-    written = write_codex_user_memories(mems, {}, d, ["work"])
-    assert written == ["g"]                 # project 级不进用户目录
-    assert (d / "g.md").exists()
-    assert not (d / "p.md").exists()
+def test_resolved_body_expands_or_skips():
+    assert "Z:/v/a" in resolved_body(_mem("g", ["global"], body="看 $VAULT/a\n"),
+                                     {"VAULT": "Z:/v"})
+    # 本机没定义该符号根 -> 返回 None，跳过，不写出断链的文件
+    assert resolved_body(_mem("g", ["global"], body="看 $NOPE/a\n"), {}) is None
+
+def test_codex_global_agents_wraps_index_in_block():
+    out = render_codex_global_agents("我手写的 Codex 全局指令\n", "- **g** — 摘要\n")
+    assert "我手写的 Codex 全局指令" in out          # 块外用户内容不动
+    assert "- **g** — 摘要" in out
+    twice = render_codex_global_agents(out, "- **g** — 摘要\n")
+    assert twice.count("<!-- hub:begin -->") == 1   # 幂等，不叠块
 
 def test_ensure_user_claude_import_idempotent():
     from hub.materialize import ensure_user_claude_import
@@ -94,14 +99,14 @@ def test_ensure_user_claude_import_idempotent():
     assert twice.count("@hub/memory-index.md") == 1
     assert "我的手写" in twice
 
-def test_materialize_claude_project_lands_in_encoded_dir(tmp_path):
-    from hub.materialize import materialize_claude_project
+def test_claude_project_dir_and_selection(tmp_path):
+    from hub.materialize import claude_project_memory_dir, select_claude_project
     from claude_migrate import encode_project_path
     home = tmp_path / "claude"
     root = "C:/proj/x"
     mems = [_mem("pj", ["project:xinao"], body="坑\n"),
             _mem("g", ["global"], body="全局\n")]
-    mem_dir = materialize_claude_project(mems, "xinao", root, home, ["work"])
+    mem_dir = claude_project_memory_dir(root, home)
     assert mem_dir.parent.name == encode_project_path(root)   # 目录名编码一致
-    assert (mem_dir / "pj.md").exists()       # 项目级落地
-    assert not (mem_dir / "g.md").exists()    # 全局不进工程目录
+    picked = {m.name for m in select_claude_project(mems, "xinao", ["work"])}
+    assert picked == {"pj"}                   # 只有工程专属的进工程目录，全局的走 bundle
