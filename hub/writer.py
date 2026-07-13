@@ -9,7 +9,7 @@ import shutil
 import tarfile
 from pathlib import Path
 
-from hub.guard import is_denied
+from hub.guard import has_denied_component, is_denied
 
 class Writer:
     def __init__(self, dry_run: bool = False):
@@ -77,7 +77,19 @@ class Writer:
         """快照的全量重写:先清空 dest,再把 tar 字节流整个解出去。
 
         不做增量——快照的真源永远在别处(某个 git 仓的 HEAD),金库这份改了也白改。
-        filter="data" 是安全要求:拒绝归档里的绝对路径、`..` 穿越和特殊文件。
+        filter="data" 是安全要求:拒绝归档里的绝对路径、`..` 穿越和逃逸目标目录的
+        符号链接/硬链接。
+
+        硬闸也挡在这一层,跟 copy_tree 同一个原则:归档里任何成员的**名字**
+        (`TarInfo.name`,archive-internal 相对路径)命中 hub.guard.has_denied_component
+        的一律跳过、不解出,同级的其余成员照常解——不是整包报错中止。用
+        has_denied_component 而不是 is_denied:成员名不是文件系统路径,resolve()
+        对它既无意义又依附 cwd(细节见 guard.py 里的文档)。
+
+        指向被挡目标的符号链接不需要额外处理:被挡内容本身根本没有被解出到
+        dest,任何指向它的符号链接(不管自己叫什么名字)解出来也只是一个悬空
+        链接,没有真实字节流出;真正会泄漏字节的路径——链接目标逃出 dest 之外
+        (比如指到宿主文件系统上真实的 secrets/)——已经由 filter="data" 挡住了。
         """
         dest = Path(dest)
         self.rmtree(dest)
@@ -87,5 +99,6 @@ class Writer:
             return
         dest.mkdir(parents=True, exist_ok=True)
         with tarfile.open(fileobj=io.BytesIO(tar_bytes)) as tf:
-            tf.extractall(dest, filter="data")
+            members = [m for m in tf.getmembers() if not has_denied_component(m.name)]
+            tf.extractall(dest, members=members, filter="data")
         self.written.append(dest)

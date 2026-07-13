@@ -1,6 +1,6 @@
 import pytest
 from pathlib import Path
-from hub.guard import check_source, is_denied, SecretPathError
+from hub.guard import check_source, is_denied, has_denied_component, SecretPathError
 
 
 def test_secrets_dir_is_denied():
@@ -95,3 +95,22 @@ def test_symlink_into_secrets_dir_is_denied(tmp_path):
 
     linked_path = link / "oss.md"
     assert is_denied(linked_path)
+
+
+def test_has_denied_component_matches_literal_parts():
+    assert has_denied_component(Path("secrets/token.md"))
+    assert has_denied_component(Path("a/.env"))
+    assert not has_denied_component(Path("a/secretsanta.md"))
+
+
+def test_has_denied_component_does_not_resolve_or_touch_cwd(tmp_path, monkeypatch):
+    """这是 has_denied_component 存在的理由:tar 归档成员名是归档内部的相对路径,
+    不是文件系统路径。cwd 恰好在真实的 secrets/ 目录下时,一个字面上不含
+    secrets 分量的裸相对名(如 "oss.md")不该被这个纯字面版本判定为拒绝——
+    如果它去 resolve(),就会像 is_denied() 那样因 cwd 而被误判,导致挡出去的
+    tar 成员筛选依附于进程当前目录这种偶然状态。"""
+    secrets_dir = tmp_path / "secrets"
+    secrets_dir.mkdir()
+    monkeypatch.chdir(secrets_dir)
+    assert not has_denied_component(Path("oss.md"))
+    assert is_denied(Path("oss.md"))          # 对照:is_denied 的 resolve 半部分确实命中

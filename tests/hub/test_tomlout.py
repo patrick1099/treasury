@@ -1,4 +1,5 @@
 import tomllib
+import pytest
 from hub.tomlout import dump_toml
 
 def test_roundtrips_through_tomllib():
@@ -24,3 +25,18 @@ def test_windows_paths_are_escaped():
 
 def test_empty_table_still_emits_header():
     assert "[t]" in dump_toml([("t", {})])
+
+def test_control_characters_roundtrip_through_real_parser():
+    """字符串值里带换行/回车/制表符时,_val() 必须转义它们——否则原样吐进 TOML
+    basic string,tomllib.loads() 会拒绝整份文件,不只是这一个字段。断言必须
+    走真实解析器,而不是检查发出的文本本身。"""
+    tricky = 'line1\nline2\r\nwith\ttab and "quote" and \\backslash'
+    out = dump_toml([("t", {"note": tricky})])
+    back = tomllib.loads(out)
+    assert back["t"]["note"] == tricky
+
+def test_unsupported_type_raises_naming_the_type():
+    """_val() 遇到不认识的形状(如嵌套 dict/list)必须响亮地报错,而不是拿
+    str()/repr() 糊成语法正确、语义错误的 TOML。错误要点名是哪个类型。"""
+    with pytest.raises(ValueError, match="dict"):
+        dump_toml([("hooks", {"PreToolUse": {"matcher": "*", "hooks": []}})])
