@@ -79,3 +79,22 @@ def test_genuinely_broken_frontmatter_still_raises():
         parse_frontmatter("---\nname x\n---\n正文\n")     # 没有冒号
     with pytest.raises(FrontmatterError):
         parse_frontmatter("没有 frontmatter\n")
+
+def test_load_memory_broken_frontmatter_includes_path(tmp_path):
+    """Malformed frontmatter must include the file path in the error message."""
+    p = tmp_path / "broken.md"
+    p.write_text("---\nname x\n---\nbody\n", encoding="utf-8")  # missing colon after 'name'
+    with pytest.raises(FrontmatterError) as exc_info:
+        load_memory(p)
+    # The error message must contain the file path
+    assert str(p) in str(exc_info.value)
+
+def test_load_memory_non_utf8_includes_path(tmp_path):
+    """Non-UTF-8 file bytes must raise FrontmatterError (not bare UnicodeDecodeError) with path in message."""
+    p = tmp_path / "non_utf8.md"
+    # Write invalid UTF-8 bytes directly
+    p.write_bytes(b"\xff\xfe---\nname: x\n---\nbody\n")
+    with pytest.raises(FrontmatterError) as exc_info:
+        load_memory(p)
+    # The error message must contain the file path
+    assert str(p) in str(exc_info.value)
