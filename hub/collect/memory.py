@@ -8,7 +8,7 @@
 """
 from dataclasses import dataclass, field
 from pathlib import Path
-from hub.frontmatter import load_memory, dump_memory, FrontmatterError
+from hub.frontmatter import load_memory, dump_memory
 from hub.guard import check_source
 from hub.writer import Writer
 
@@ -26,31 +26,41 @@ def _scan(source_dirs: list[Path]) -> tuple[list, list[str]]:
     mems, sensitive = [], []
     for d in source_dirs:
         d = Path(d)
-        check_source(d)                     # 硬闸
+        check_source(d)                     # 硬闸:目录本身
         if not d.is_dir():
             continue                        # 工具没装 = 正常
         for p in sorted(d.glob("*.md")):
             if p.name in ("MEMORY.md", "memory-index.md"):
                 continue                    # 派生索引，不是记忆
-            try:
-                m = load_memory(p)
-            except FrontmatterError as e:
-                raise FrontmatterError(f"{p}: {e}") from e
+            check_source(p)                 # 硬闸:每个文件——挡住目录干净但
+                                             # 文件本身(如符号链接/junction)解析
+                                             # 后落进 secrets/ 的情况
+            m = load_memory(p)              # 解析失败直接向上抛，路径已在
+                                             # load_memory 的错误信息里带过一次
             if m.sensitive:
                 sensitive.append(m.name)    # 硬闸 3：sensitive 不入库
                 continue
             mems.append(m)
     return mems, sensitive
 
+def _diff(mems: list, home: Path) -> tuple[set[str], set[str]]:
+    """算一次:本次要写的名字集合、要删的名字集合。
+
+    plan_memory 和 collect_memory **都必须**调这一个函数——不能各自重算,
+    否则预览(--dry-run)和实际发生的事就有各自漂移的可能。
+    """
+    have = {p.stem for p in home.glob("*.md")} if home.is_dir() else set()
+    names = {m.name for m in mems}
+    return names, have - names
+
 def plan_memory(source_dirs: list[Path], vault_root: Path, host: str) -> MemoryResult:
     """只算不写:告诉你这次会写哪些、会删哪些。"""
     mems, sensitive = _scan(source_dirs)
     home = _home(vault_root, host)
-    have = {p.stem for p in home.glob("*.md")} if home.is_dir() else set()
-    names = {m.name for m in mems}
+    names, gone = _diff(mems, home)
     return MemoryResult(
         written=sorted(names),
-        deleted=sorted(have - names),
+        deleted=sorted(gone),
         skipped_sensitive=sorted(sensitive),
     )
 
@@ -58,11 +68,10 @@ def collect_memory(source_dirs: list[Path], vault_root: Path, host: str,
                    w: Writer) -> MemoryResult:
     mems, sensitive = _scan(source_dirs)
     home = _home(vault_root, host)
-    have = {p.stem for p in home.glob("*.md")} if home.is_dir() else set()
-    names = {m.name for m in mems}
+    names, gone = _diff(mems, home)
     for m in mems:
         w.write_text(home / f"{m.name}.md", dump_memory(m))
-    for gone in sorted(have - names):
-        w.unlink(home / f"{gone}.md")
-    return MemoryResult(written=sorted(names), deleted=sorted(have - names),
+    for name in sorted(gone):
+        w.unlink(home / f"{name}.md")
+    return MemoryResult(written=sorted(names), deleted=sorted(gone),
                         skipped_sensitive=sorted(sensitive))
