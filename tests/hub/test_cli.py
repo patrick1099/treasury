@@ -299,6 +299,46 @@ def test_secret_scan_warning_survives_gbk_stdout(tmp_path, monkeypatch):
     printed = buf.getvalue().decode("gbk")
     assert "疑似密钥" in printed        # 警告真的印出来了，不是被吞掉
 
+def test_collect_validates_vault_before_writing_anything(tmp_path):
+    """最终评审 finding 3:_cmd_collect 在 run_all **写完之后**才 load_vault(),而
+    load_vault() 会解析金库里的**每一条**记忆(含 shared/ 和别的设备的)。于是:
+
+      项目 C 往 shared/ 提升一条带 `sensitive: false  # 不入库` 的记忆(_require_bool
+      正好catch 的形状,而且是 Claude 自己会写出来的形状)
+        → 备份写成功了,collect 抛错,MEMORY.md **停在旧版本**
+        → SCHEMA §5 明确告诉 C"索引里没有的记忆,金库里就是没有,不必自己遍历兜底"
+        → 那条记忆在 C 眼里**人间蒸发**,而它明明躺在金库里
+        → 而且 collect 和 sync 从此都是死的,直到有人手工去改金库。
+
+    先验后写:坏记忆必须在**动笔之前**就把这次 run 拦下来,金库一个字节都不变,
+    索引也就永远不会陈旧。
+    """
+    v = _mk_backup_vault(tmp_path)
+    (v / "box1" / "claude" / "memory" / "m1.md").write_text(_mem("m1"), encoding="utf-8")
+    idx = v / "MEMORY.md"
+    idx.write_text("# 旧索引\n", encoding="utf-8")
+    idx_before = idx.read_bytes()
+
+    # C 提升进 shared/ 的一条坏记忆(行内注释 → sensitive 不是真布尔 → FrontmatterError)
+    (v / "shared" / "memory" / "promoted.md").write_text(
+        "---\nname: promoted\ndescription: d\nmetadata:\n  type: reference\n"
+        "  scope: [global]\n  sensitive: false  # 不入库\n---\n正文\n", encoding="utf-8")
+
+    src = tmp_path / "toolmem"
+    src.mkdir()
+    (src / "new.md").write_text(_mem("newmem"), encoding="utf-8")
+    (v / "box1" / "device.toml").write_text(
+        'class = ["work"]\nprojects = []\n\n[paths]\n\n'
+        f'[sources.claude]\nmemory = ["{src.as_posix()}"]\n',
+        encoding="utf-8")
+
+    rc = main(["collect", "--vault", str(v), "--host", "box1", "--yes"])
+
+    assert rc != 0
+    # 什么都没写:备份没落盘,索引没变 —— 不存在"备份成功了但索引陈旧"的中间态
+    assert not (v / "box1" / "claude" / "memory" / "newmem.md").exists()
+    assert idx.read_bytes() == idx_before
+
 def test_collect_with_missing_configured_source_refuses_instead_of_wiping_vault(tmp_path):
     """最终评审 finding 1(CRITICAL)的端到端复现:device.toml 里配着一个**不存在**的
     记忆源(scaffold --force 写回的 <占位> 模板正是这个形状),`collect --yes` 曾经把

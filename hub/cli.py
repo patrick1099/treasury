@@ -8,6 +8,7 @@ from hub.links import lint_raw_paths, load_lint_exempt
 from hub.backend import GitBackend, ConflictError
 from hub.collect import plan_deletions, preflight, run_all
 from hub.collect.errors import MissingSourceError
+from hub.frontmatter import FrontmatterError
 from hub.writer import Writer
 
 def _lint(vault, exempt: set[str]) -> list[str]:
@@ -30,12 +31,28 @@ def _cmd_collect(args) -> int:
     dev = load_device(vault_root, host)
 
     try:
-        # 先验后写:配了的源必须真的在。配置坏了**不是**"用户把记忆删光了",绝不能
+        # 先验后写(一):配了的源必须真的在。配置坏了**不是**"用户把记忆删光了",绝不能
         # 顺着镜像语义把金库清空——那是 2026-07-13 评审复现的 CRITICAL。
         preflight(dev)
         doomed = plan_deletions(vault_root, dev)
     except MissingSourceError as e:
         print("collect 停止:device.toml 里的源路径有问题\n")
+        print(e)
+        return 1
+
+    try:
+        # 先验后写(二):把金库里**所有**记忆先解析一遍(含 shared/ 和别的设备的)。
+        #
+        # 这一步过去在 run_all 的**后面**——写完才发现金库里有一条坏记忆,于是备份
+        # 落了盘、collect 抛错、MEMORY.md 停在旧版本。而 SCHEMA §5 明确告诉加载器
+        # "索引里没有的记忆,金库里就是没有,不必自己遍历兜底" —— 那条记忆就此从 C
+        # 的视野里蒸发,尽管它明明躺在金库里;collect 和 sync 也双双卡死。
+        #
+        # 一条坏记忆该做的事是**在动笔之前**把这次 run 拦下来:什么都没写,索引也就
+        # 永远不会陈旧。错误信息里已经点名了是哪个文件。
+        load_vault(vault_root)
+    except FrontmatterError as e:
+        print("collect 停止:金库里有一条记忆解析不了(在写任何东西之前就停了,金库没变)\n")
         print(e)
         return 1
     if doomed and not args.yes and not args.dry_run:
