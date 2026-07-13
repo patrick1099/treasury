@@ -32,6 +32,23 @@ def _mk_vault(root: Path, host: str):
 
 _RAW_PATH = "装在 C:/Users/me/AppData/Local/Programs 下。"
 
+def test_sync_blocks_raw_path_without_exempt(tmp_path):
+    vault = tmp_path / "vault"; _mk_vault(vault, "h1"); _init_git(vault)
+    (vault / "h1" / "memory" / "rp.md").write_text(_mem("rp", body=_RAW_PATH),
+                                                   encoding="utf-8")
+    rc = main(["sync", "--vault", str(vault), "--host", "h1"])
+    assert rc == 1                       # 未豁免 -> 裸路径硬拦
+    assert not (vault / "MEMORY.md").exists()
+
+def test_sync_exempts_raw_path_via_list(tmp_path):
+    vault = tmp_path / "vault"; _mk_vault(vault, "h1"); _init_git(vault)
+    (vault / "h1" / "memory" / "rp.md").write_text(_mem("rp", body=_RAW_PATH),
+                                                   encoding="utf-8")
+    (vault / "lint-exempt.txt").write_text("# 豁免\nrp\n", encoding="utf-8")
+    rc = main(["sync", "--vault", str(vault), "--host", "h1"])
+    assert rc == 0                       # rp 在名单 -> 裸路径放行
+    assert (vault / "MEMORY.md").exists()
+
 def test_sync_exempt_does_not_bypass_sensitive(tmp_path):
     vault = tmp_path / "vault"; _mk_vault(vault, "h1"); _init_git(vault)
     (vault / "h1" / "memory" / "rp.md").write_text(
