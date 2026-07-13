@@ -162,6 +162,9 @@ def _require_bool(md: dict, key: str, default: bool, path: Path) -> bool:
         f"实际拿到 {type(v).__name__}: {v!r}。"
         f"注意本解析器**不剥行内注释**——`{key}: false  # 说明` 整串都是值。")
 
+_KNOWN_TOP = frozenset({"name", "description", "metadata"})
+_KNOWN_META = frozenset({"type", "scope", "portable", "sensitive"})
+
 def load_memory(path: Path) -> Memory:
     try:
         meta, body = parse_frontmatter(path.read_text(encoding="utf-8"))
@@ -177,25 +180,58 @@ def load_memory(path: Path) -> Memory:
         sensitive=_require_bool(md, "sensitive", False, path),
         body=body,
         path=path,
+        # 认不出来的键**不丢**,原样带着(见 model.Memory 的注释)。顺序照源文件里的
+        # 出现顺序留着——dict 保序,于是 dump 出来也稳定,不会每次 collect 都抖出
+        # 一堆无谓的 git diff。
+        extra={k: v for k, v in meta.items() if k not in _KNOWN_TOP},
+        extra_metadata={k: v for k, v in md.items() if k not in _KNOWN_META},
     )
 
 def _fmt_list(xs: list[str]) -> str:
-    return "[" + ", ".join(xs) + "]"
+    return "[" + ", ".join(str(x) for x in xs) + "]"
 
-def dump_memory(m: Memory, body: str | None = None) -> str:
-    """序列化一条记忆。body 给了就用它替代 m.body(落地时用符号根展开后的正文)。"""
+def _fmt_scalar(v) -> str:
+    if isinstance(v, bool):
+        return str(v).lower()
+    if isinstance(v, list):
+        return _fmt_list(v)
+    return str(v)
+
+def _fmt_extra(d: dict, indent: str) -> list[str]:
+    """把未识别的键写回去,写法必须落在 parse_frontmatter 认得的那个子集里
+    (标量 / 行内列表 / 一层嵌套),否则我们"保住"的键下一轮就解析不回来了。"""
+    lines = []
+    for k, v in d.items():
+        if isinstance(v, dict):
+            lines.append(f"{indent}{k}:")
+            lines += [f"{indent}  {k2}: {_fmt_scalar(v2)}" for k2, v2 in v.items()]
+        else:
+            lines.append(f"{indent}{k}: {_fmt_scalar(v)}")
+    return lines
+
+def dump_memory(m: Memory) -> str:
+    """序列化一条记忆。
+
+    已知的 7 个字段占**固定位置、固定写法**;`m.extra` / `m.extra_metadata` 里那些
+    hub 不认识的键**原样搭车**,分别跟在各自那一层的已知键后面(见 model.Memory)。
+    顺序沿用源文件里的出现顺序 → dump 是幂等的,不会每次 collect 都抖出无谓的 diff。
+    """
     lines = [
         "---",
         f"name: {m.name}",
         f"description: {m.description}",
+    ]
+    lines += _fmt_extra(m.extra, "")
+    lines += [
         "metadata:",
         f"  type: {m.type}",
         f"  scope: {_fmt_list(m.scope)}",
         f"  portable: {str(m.portable).lower()}",
         f"  sensitive: {str(m.sensitive).lower()}",
-        "---",
     ]
-    b = m.body if body is None else body
+    lines += _fmt_extra(m.extra_metadata, "  ")
+    lines.append("---")
+    b = m.body
     if not b.endswith("\n"):
         b += "\n"
     return "\n".join(lines) + "\n" + b
