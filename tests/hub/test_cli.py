@@ -299,6 +299,30 @@ def test_secret_scan_warning_survives_gbk_stdout(tmp_path, monkeypatch):
     printed = buf.getvalue().decode("gbk")
     assert "疑似密钥" in printed        # 警告真的印出来了，不是被吞掉
 
+def test_collect_with_missing_configured_source_refuses_instead_of_wiping_vault(tmp_path):
+    """最终评审 finding 1(CRITICAL)的端到端复现:device.toml 里配着一个**不存在**的
+    记忆源(scaffold --force 写回的 <占位> 模板正是这个形状),`collect --yes` 曾经把
+    金库里的记忆**全部删光**,还返回 0。金库是这些记忆的唯一备份。
+
+    现在:拒绝执行,点名那个路径,一条记忆都不许删。
+    """
+    v = _mk_backup_vault(tmp_path)
+    home = v / "box1" / "claude" / "memory"
+    for n in ("m1", "m2", "m3"):
+        (home / f"{n}.md").write_text(_mem(n), encoding="utf-8")
+    before = {p.name: p.read_bytes() for p in home.glob("*.md")}
+
+    missing = tmp_path / "gone" / "memory"          # 配了,但根本不存在
+    (v / "box1" / "device.toml").write_text(
+        'class = ["work"]\nprojects = []\n\n[paths]\n\n'
+        f'[sources.claude]\nmemory = ["{missing.as_posix()}"]\n',
+        encoding="utf-8")
+
+    rc = main(["collect", "--vault", str(v), "--host", "box1", "--yes"])
+
+    assert rc != 0                                                   # 不能报成功
+    assert {p.name: p.read_bytes() for p in home.glob("*.md")} == before   # 一个字节都没动
+
 def test_bootstrap_dry_run_message_is_not_past_tense(tmp_path):
     """Finding 3: --dry-run 下什么都没装，措辞不能用"已装"这种既成事实的过去式。"""
     v = _mk_backup_vault(tmp_path)

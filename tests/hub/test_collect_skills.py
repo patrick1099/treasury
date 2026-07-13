@@ -1,5 +1,7 @@
 import subprocess
 from pathlib import Path
+import pytest
+from hub.collect.errors import MissingSourceError
 from hub.collect.skills import collect_skills
 from hub.writer import Writer
 
@@ -42,9 +44,24 @@ def test_skill_with_own_git_repo_is_snapshotted_not_copied(tmp_path):
     assert not (dest / "gamma" / ".git").exists()    # 不留嵌套仓
     assert not (dest / "gamma" / "junk").exists()    # gitignored 出不去
 
-def test_missing_source_is_not_an_error(tmp_path):
+def test_no_source_configured_is_not_an_error(tmp_path):
+    """device.toml 里没配 skills(src is None)= 工具没装 = 正常。"""
     assert collect_skills(None, tmp_path / "vault" / "skills", Writer()) == []
-    assert collect_skills(tmp_path / "nope", tmp_path / "vault" / "skills", Writer()) == []
+
+def test_configured_but_missing_source_refuses_and_keeps_the_backup(tmp_path):
+    """配了、但目录不在 → 配置错误,抛错点名路径;金库里已有的 skill 备份纹丝不动。
+
+    (今天这条路径还删不掉东西——早退发生在 rmtree 之前——但它和记忆那条毁灭路径
+    是同一个形状:把"配置坏了"读成"本机什么都没有"。让它响。)
+    """
+    dest = tmp_path / "vault" / "skills"
+    _skill(dest, "backed_up_last_week")
+    before = (dest / "backed_up_last_week" / "SKILL.md").read_bytes()
+
+    with pytest.raises(MissingSourceError, match="nope"):
+        collect_skills(tmp_path / "nope", dest, Writer())
+
+    assert (dest / "backed_up_last_week" / "SKILL.md").read_bytes() == before
 
 def test_dry_run_writes_nothing(tmp_path):
     src = tmp_path / "skills"

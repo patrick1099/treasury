@@ -4,6 +4,7 @@ import tomllib
 from pathlib import Path
 import pytest
 from hub.collect.decl import collect_claude_decl, collect_codex_decl
+from hub.collect.errors import MissingSourceError
 from hub.guard import SecretPathError
 from hub.writer import Writer
 
@@ -95,8 +96,26 @@ def test_codex_decl_copies_declarations_only(tmp_path):
     assert r.repos == []            # Codex 本机没有"自己写的"插件 —— 结果如此，不是双标
 
 def test_missing_settings_is_not_an_error(tmp_path):
+    """没配(None)= 本机没那个源 = 正常。"""
     r = collect_claude_decl(None, None, tmp_path / "v", Writer())
     assert r.repos == [] and r.enabled == {}
+
+def test_configured_but_missing_settings_refuses(tmp_path):
+    """配了、但文件不在 → 配置错误。静默跳过的后果:plugins.toml 里 [enabled] 是空的,
+    而 SCHEMA §9 告诉加载器"还原自有插件以 plugins.toml 为准"——它会以为用户没装任何插件。
+    """
+    with pytest.raises(MissingSourceError, match="nope.json"):
+        collect_claude_decl(None, tmp_path / "nope.json", tmp_path / "v", Writer())
+
+def test_configured_but_missing_plugin_repos_refuses(tmp_path):
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps(_SETTINGS), encoding="utf-8")
+    with pytest.raises(MissingSourceError, match="no-such-dir"):
+        collect_claude_decl(tmp_path / "no-such-dir", settings, tmp_path / "v", Writer())
+
+def test_configured_but_missing_codex_config_refuses(tmp_path):
+    with pytest.raises(MissingSourceError, match="nope.toml"):
+        collect_codex_decl(tmp_path / "nope.toml", tmp_path / "v", Writer())
 
 def test_dry_run_writes_nothing(tmp_path):
     devdir = tmp_path / "plugins-dev"

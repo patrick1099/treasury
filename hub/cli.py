@@ -6,7 +6,8 @@ from hub.derive import render_memory_index
 from hub.scope import lint_scope
 from hub.links import lint_raw_paths, load_lint_exempt
 from hub.backend import GitBackend, ConflictError
-from hub.collect import plan_deletions, run_all
+from hub.collect import plan_deletions, preflight, run_all
+from hub.collect.errors import MissingSourceError
 from hub.writer import Writer
 
 def _lint(vault, exempt: set[str]) -> list[str]:
@@ -28,7 +29,15 @@ def _cmd_collect(args) -> int:
     host = args.host or current_host()
     dev = load_device(vault_root, host)
 
-    doomed = plan_deletions(vault_root, dev)
+    try:
+        # 先验后写:配了的源必须真的在。配置坏了**不是**"用户把记忆删光了",绝不能
+        # 顺着镜像语义把金库清空——那是 2026-07-13 评审复现的 CRITICAL。
+        preflight(dev)
+        doomed = plan_deletions(vault_root, dev)
+    except MissingSourceError as e:
+        print("collect 停止:device.toml 里的源路径有问题\n")
+        print(e)
+        return 1
     if doomed and not args.yes and not args.dry_run:
         print(f"这次会从金库删掉 {len(doomed)} 条记忆(本机源里已经没有它们了):")
         for n in doomed:

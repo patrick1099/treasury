@@ -45,6 +45,36 @@ def test_agents_file_is_collected_for_codex(tmp_path):
     assert out.read_text(encoding="utf-8") == "codex 的全局约定\n"
 
 
+def test_preflight_refuses_missing_source_before_anything_is_written(tmp_path):
+    """finding 1 的连带面:流水线是边验边写的,一个坏在**后面**的源(skills)会让
+    金库停在"记忆写完了、skill 没写"的半成品状态。preflight 必须先验后写。
+    """
+    from hub.collect import preflight
+    from hub.collect.errors import MissingSourceError
+    from hub.model import DeviceProfile, ToolSources
+
+    v = _vault(tmp_path)
+    mem = tmp_path / "mem"
+    mem.mkdir()
+    (mem / "a.md").write_text(
+        "---\nname: a\ndescription: d\nmetadata:\n  type: reference\n  scope: [global]\n---\n正文\n",
+        encoding="utf-8")
+    dev = DeviceProfile(
+        host="box1", classes=[], projects=[], paths={},
+        sources={"claude": ToolSources(memory=[str(mem)],
+                                       skills=str(tmp_path / "no-such-skills"))},
+    )
+    with pytest.raises(MissingSourceError, match="no-such-skills"):
+        preflight(dev)
+
+    w = Writer()
+    with pytest.raises(MissingSourceError):
+        run_all(v, dev, w)
+    # 半成品的证据:run_all 自己走到 skills 才炸,记忆已经落盘了。preflight 的作用
+    # 就是让 CLI 在这之前停住 —— 所以 CLI 那条路径上金库一个字节都不会变。
+    assert not (v / "box1" / "claude" / "skills").exists()
+
+
 def test_agents_under_secrets_is_refused_for_claude(tmp_path):
     v = _vault(tmp_path)
     agents = tmp_path / "home" / "secrets" / "CLAUDE.md"

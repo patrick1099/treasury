@@ -4,17 +4,24 @@
 带仓的走 git archive(避免嵌套仓变空壳),不带仓的直接拷。
 """
 from pathlib import Path
+from hub.collect.errors import require_source
 from hub.guard import check_source
 from hub.snapshot import is_git_repo, snapshot_repo
 from hub.writer import Writer
 
 def collect_skills(src: Path | None, dest: Path, w: Writer) -> list[str]:
+    """src is None = device.toml 里没配 skills = 工具没装 = 正常,什么都不做。
+
+    配了、但目录不在 → 抛错(见 errors.py)。今天这条路径还不至于删掉金库里的 skill
+    (`is_dir()` 的早退发生在 `rmtree` **之前**),但它跟记忆那条毁灭路径是同一个形状:
+    把"配置坏了"读成"本机什么都没有"。这里让它响,免得金库里的 skill 备份悄悄变成
+    一份永不更新的化石,而用户以为每次 collect 都在备份。
+    """
     if src is None:
         return []
     src, dest = Path(src), Path(dest)
     check_source(src)
-    if not src.is_dir():
-        return []                       # 工具没装 = 正常
+    require_source(src, "[sources.<工具>] skills")
     w.rmtree(dest)                      # 全量重写:本机删掉的 skill，金库也不该留
     names = []
     for d in sorted(p for p in src.iterdir() if p.is_dir()):
