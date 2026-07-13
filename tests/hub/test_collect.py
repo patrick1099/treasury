@@ -1,3 +1,4 @@
+import subprocess
 import pytest
 from pathlib import Path
 from hub.collect.memory import plan_memory, collect_memory
@@ -63,8 +64,12 @@ def test_broken_frontmatter_raises_not_silently_skipped(tmp_path):
     src = tmp_path / "src"
     src.mkdir()
     (src / "bad.md").write_text("没有 frontmatter\n", encoding="utf-8")
-    with pytest.raises(FrontmatterError, match="bad.md"):
+    with pytest.raises(FrontmatterError, match="bad.md") as exc_info:
         collect_memory([src], v, "box1", Writer())
+    # load_memory() already names the file; the collector must not wrap the
+    # error a second time (that produced "...bad.md: ...bad.md: ..." before).
+    msg = str(exc_info.value)
+    assert msg.count("bad.md") == 1, f"file name should be prefixed exactly once, got: {msg!r}"
 
 def test_secrets_source_is_refused(tmp_path):
     v = _vault(tmp_path)
@@ -94,6 +99,38 @@ def test_plan_matches_what_collect_would_do(tmp_path):
     p = plan_memory([src], v, "box1")
     r = collect_memory([src], v, "box1", Writer())
     assert (p.written, p.deleted) == (r.written, r.deleted)
+
+def test_file_inside_legit_dir_that_resolves_into_secrets_is_denied(tmp_path):
+    """Finding 2: the hard gate must apply to each individual file, not just
+    the source directory root. A directory whose own literal path is clean
+    (no 'secrets' component) can still contain an entry that — once resolved —
+    lands inside secrets/. The scan must catch that at the per-file level.
+
+    Real symlinks require elevation/Developer Mode on Windows (see
+    test_guard.py::test_symlink_into_secrets_dir_is_denied, which skips on
+    this class of machine). An NTFS junction (`mklink /J`) needs no elevation
+    and resolves through the exact same Path.resolve() machinery, so it's
+    used here as the on-disk reparse-point mechanism. It links a directory,
+    but naming it '<name>.md' makes pathlib's glob("*.md") pick it up exactly
+    like a file entry would — which is all _scan()'s per-file gate cares about.
+    """
+    v = _vault(tmp_path)
+    secrets_dir = tmp_path / "secrets"
+    secrets_dir.mkdir()
+    (secrets_dir / "real.txt").write_text("token=super-secret", encoding="utf-8")
+
+    src = tmp_path / "src"
+    src.mkdir()
+    link = src / "leaked.md"
+    try:
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(secrets_dir)],
+            check=True, capture_output=True, text=True)
+    except (OSError, subprocess.CalledProcessError) as e:
+        pytest.skip(f"无法在本机创建 NTFS junction: {e}")
+
+    with pytest.raises(SecretPathError):
+        collect_memory([src], v, "box1", Writer())
 
 def test_collected_memory_round_trips_through_load_vault(tmp_path):
     # Carry-forward defect #1: the old collector wrote to <host>/memory/, a layout
