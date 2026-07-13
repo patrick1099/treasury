@@ -17,9 +17,27 @@ DENIED_NAMES = frozenset({"secrets", "auth.json", ".env"})
 
 
 def is_denied(path: Path) -> bool:
-    """路径自身或它的任一祖先命中黑名单。"""
+    """路径自身或它的任一祖先命中黑名单。
+
+    同时按**字面路径**与**解析后的真实路径**匹配组件(两者任一命中即拒绝)——
+    单纯 resolve() 并不严格更强,所以两边都要查:
+
+    - 字面 parts:挡得住 ``..`` 穿越等仍把 ``secrets`` 写在字符串里的路径。
+    - resolve(strict=False) 后的 parts:挡得住符号链接指向 secrets/ 之类目标、
+      以及 cwd 已经在 secrets/ 内时传入裸相对文件名(字面串里根本没有 secrets)
+      这两种字面匹配看不出来的情况。``shutil.copytree`` 默认解引用符号链接,
+      所以这里必须解析,否则符号链接能让真实字节绕过硬闸落进金库。
+    - resolve() 因符号链接环等原因抛 OSError 时,闭门造车地当作拒绝——判断不了
+      一个路径真实指向哪里,正确答案是拒绝读取,不是放行。
+    """
     p = Path(path)
-    return any(part.lower() in DENIED_NAMES for part in p.parts)
+    if any(part.lower() in DENIED_NAMES for part in p.parts):
+        return True
+    try:
+        resolved = p.resolve(strict=False)
+    except OSError:
+        return True
+    return any(part.lower() in DENIED_NAMES for part in resolved.parts)
 
 
 def check_source(path: Path) -> None:
