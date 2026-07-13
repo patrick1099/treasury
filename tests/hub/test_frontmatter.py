@@ -39,3 +39,43 @@ def test_reject_out_of_subset():
     bad = "---\nname: x\ntags:\n  - a:\n      b: 1\n---\nbody\n"  # 二层嵌套列表，越界
     with pytest.raises(FrontmatterError):
         parse_frontmatter(bad)
+
+
+_BLOCK = """---
+name: x
+description: 摘要
+metadata:
+  type: project
+  scope:
+    - global
+  sensitive: false
+---
+正文
+"""
+
+def test_block_list_is_parsed(tmp_path):
+    meta, body = parse_frontmatter(_BLOCK)
+    assert meta["metadata"]["scope"] == ["global"]
+    assert body.strip() == "正文"
+
+def test_block_list_with_multiple_items():
+    text = _BLOCK.replace("    - global\n", "    - tool:claude\n    - device:work\n")
+    meta, _ = parse_frontmatter(text)
+    assert meta["metadata"]["scope"] == ["tool:claude", "device:work"]
+
+def test_top_level_block_list():
+    text = "---\nname: x\ndescription: d\ntags:\n  - a\n  - b\n---\n正文\n"
+    meta, _ = parse_frontmatter(text)
+    assert meta["tags"] == ["a", "b"]
+
+def test_load_memory_roundtrips_block_list(tmp_path):
+    p = tmp_path / "x.md"
+    p.write_text(_BLOCK, encoding="utf-8")
+    m = load_memory(p)
+    assert m.scope == ["global"] and m.type == "project"
+
+def test_genuinely_broken_frontmatter_still_raises():
+    with pytest.raises(FrontmatterError):
+        parse_frontmatter("---\nname x\n---\n正文\n")     # 没有冒号
+    with pytest.raises(FrontmatterError):
+        parse_frontmatter("没有 frontmatter\n")
