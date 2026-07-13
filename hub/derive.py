@@ -1,11 +1,15 @@
+from pathlib import Path
 from hub.model import Memory
 
-def _rel(m: Memory) -> str:
-    return f"{m.origin}/memory/{m.name}.md" if m.origin else f"{m.name}.md"
+def render_memory_index(memories: list[Memory], vault_root: Path) -> str:
+    """金库总览索引。链接是相对金库根的真实路径,一眼看得出哪条是共享的、哪条是哪台设备的。
 
-def render_memory_index(memories: list[Memory]) -> str:
-    """金库总览索引。链接带上归属文件夹，一眼看得出哪条是公共的、哪条是哪台设备产的。"""
-    header = "<!-- 自动生成，勿手改：由 hub 从各 <归属>/memory/*.md frontmatter 派生 -->\n"
-    rows = [f"- [{m.name}]({_rel(m)}) — {m.description}"
-            for m in sorted(memories, key=lambda x: (x.origin or "", x.name))]
+    这是**派生物**,每次重算。C 阶段的 skill 靠它决定读哪几条正文,
+    不必把全文塞进上下文(47 条全文 85 KB,索引 7.3 KB)。
+    """
+    header = "<!-- 自动生成，勿手改：由 hub 从各 memory/*.md 的 frontmatter 派生 -->\n"
+    rows = []
+    for m in sorted(memories, key=lambda x: (x.origin or "", x.name)):
+        rel = Path(m.path).relative_to(vault_root).as_posix() if m.path else f"{m.name}.md"
+        rows.append(f"- [{m.name}]({rel}) — {m.description}")
     return header + "\n".join(rows) + "\n"

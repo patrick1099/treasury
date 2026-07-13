@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 
-SHARED = "shared"           # 公共池，与各设备文件夹同级；所有设备无条件落地
+SHARED = "shared"           # 共享区，与各设备文件夹同级
 
 @dataclass
 class Memory:
@@ -13,13 +13,17 @@ class Memory:
     sensitive: bool
     body: str
     path: Path | None = None
-    # 来源 = 金库顶层的归属文件夹名：SHARED 或某台设备的 host。
+    # 归属 = 金库顶层文件夹名：SHARED 或某台设备的 host
     origin: str | None = None
 
 @dataclass
-class ProjectTarget:
-    project: str
-    root: str
+class ToolSources:
+    """一台设备上、某个工具的源路径。缺的项就是本机没有,不是错误。"""
+    memory: list[str] = field(default_factory=list)
+    skills: str | None = None
+    plugin_repos: str | None = None     # 自己写的插件仓所在目录（Claude 的 plugins-dev）
+    settings: str | None = None         # claude: settings.json ; codex: config.toml
+    agents: str | None = None           # claude: CLAUDE.md ; codex: AGENTS.md
 
 @dataclass
 class DeviceProfile:
@@ -27,8 +31,7 @@ class DeviceProfile:
     classes: list[str]
     projects: list[str]
     paths: dict[str, str]
-    targets: list[ProjectTarget] = field(default_factory=list)
-    collect_sources: list[str] = field(default_factory=list)
+    sources: dict[str, ToolSources] = field(default_factory=dict)   # "claude" / "codex"
 
 @dataclass(frozen=True)
 class Target:
@@ -42,7 +45,6 @@ class VaultConfig:
 
 @dataclass
 class Vault:
-    root: "Path"
+    root: Path
     config: VaultConfig
     memories: list[Memory]
-    rules: list[tuple[str, str]]

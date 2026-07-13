@@ -16,25 +16,20 @@ def _mem(name: str, sensitive: str = "false", body: str = "正文") -> str:
             f"  scope: [global]\n  portable: true\n  sensitive: {sensitive}\n---\n{body}\n")
 
 def _mk_vault(root: Path, host: str):
-    """金库顶层按归属切:shared/ 公共池 + <host>/ 本机家当。"""
-    (root / "shared" / "rules").mkdir(parents=True)
-    (root / "shared" / "memory").mkdir()
-    (root / host / "memory").mkdir(parents=True)
+    """金库顶层按归属切:shared/ 共享区(按类型) + <host>/ 备份区(按工具)。"""
+    (root / "shared" / "memory").mkdir(parents=True)
+    (root / host / "claude" / "memory").mkdir(parents=True)
     (root / "vault.toml").write_text("version = 1\n", encoding="utf-8")
-    (root / "shared" / "rules" / "a.md").write_text("规则A\n", encoding="utf-8")
-    (root / host / "memory" / "m1.md").write_text(_mem("m1"), encoding="utf-8")
-    tgt = root / "proj"; tgt.mkdir()
+    (root / host / "claude" / "memory" / "m1.md").write_text(_mem("m1"), encoding="utf-8")
     (root / host / "device.toml").write_text(
-        f'class = ["work"]\nprojects = ["xinao"]\n\n[paths]\nVAULT = "{root.as_posix()}"\n\n'
-        f'[[targets]]\nproject = "xinao"\nroot = "{tgt.as_posix()}"\n',
+        f'class = ["work"]\nprojects = ["xinao"]\n\n[paths]\nVAULT = "{root.as_posix()}"\n',
         encoding="utf-8")
-    return tgt
 
 _RAW_PATH = "装在 C:/Users/me/AppData/Local/Programs 下。"
 
 def test_sync_blocks_raw_path_without_exempt(tmp_path):
     vault = tmp_path / "vault"; _mk_vault(vault, "h1"); _init_git(vault)
-    (vault / "h1" / "memory" / "rp.md").write_text(_mem("rp", body=_RAW_PATH),
+    (vault / "h1" / "claude" / "memory" / "rp.md").write_text(_mem("rp", body=_RAW_PATH),
                                                    encoding="utf-8")
     rc = main(["sync", "--vault", str(vault), "--host", "h1"])
     assert rc == 1                       # 未豁免 -> 裸路径硬拦
@@ -42,7 +37,7 @@ def test_sync_blocks_raw_path_without_exempt(tmp_path):
 
 def test_sync_exempts_raw_path_via_list(tmp_path):
     vault = tmp_path / "vault"; _mk_vault(vault, "h1"); _init_git(vault)
-    (vault / "h1" / "memory" / "rp.md").write_text(_mem("rp", body=_RAW_PATH),
+    (vault / "h1" / "claude" / "memory" / "rp.md").write_text(_mem("rp", body=_RAW_PATH),
                                                    encoding="utf-8")
     (vault / "lint-exempt.txt").write_text("# 豁免\nrp\n", encoding="utf-8")
     rc = main(["sync", "--vault", str(vault), "--host", "h1"])
@@ -51,7 +46,7 @@ def test_sync_exempts_raw_path_via_list(tmp_path):
 
 def test_sync_exempt_does_not_bypass_sensitive(tmp_path):
     vault = tmp_path / "vault"; _mk_vault(vault, "h1"); _init_git(vault)
-    (vault / "h1" / "memory" / "rp.md").write_text(
+    (vault / "h1" / "claude" / "memory" / "rp.md").write_text(
         _mem("rp", sensitive="true", body=_RAW_PATH), encoding="utf-8")
     (vault / "lint-exempt.txt").write_text("rp\n", encoding="utf-8")
     rc = main(["sync", "--vault", str(vault), "--host", "h1"])
@@ -66,7 +61,7 @@ def test_sync_success_publishes(tmp_path):
 
 def test_sync_lint_failure_returns_1(tmp_path):
     vault = tmp_path / "vault"; _mk_vault(vault, "h1"); _init_git(vault)
-    (vault / "h1" / "memory" / "sec.md").write_text(
+    (vault / "h1" / "claude" / "memory" / "sec.md").write_text(
         _mem("sec", sensitive="true", body="密"), encoding="utf-8")
     rc = main(["sync", "--vault", str(vault), "--host", "h1"])
     assert rc == 1
@@ -89,13 +84,10 @@ def test_sync_conflict_returns_2(tmp_path):
     assert rc == 2
 
 def _set_collect_sources(vault: Path, host: str, *dirs: Path) -> None:
+    """给 h1 的 [sources.claude] 段追加 memory 源(collect 目前只读 claude 的源)。"""
     dev_toml = vault / host / "device.toml"
-    # NOTE: must insert before the first table header ([paths]/[[targets]]) —
-    # TOML nests any bare key appended *after* a table header into that table,
-    # not the document root, so a naive append would land inside [[targets]].
     srcs = ", ".join(f'"{d.as_posix()}"' for d in dirs)
-    content = dev_toml.read_text(encoding="utf-8").replace(
-        "\n[paths]", f'\ncollect_sources = [{srcs}]\n\n[paths]', 1)
+    content = dev_toml.read_text(encoding="utf-8") + f'\n[sources.claude]\nmemory = [{srcs}]\n'
     dev_toml.write_text(content, encoding="utf-8")
 
 def test_collect_lands_in_own_device_folder(tmp_path):
@@ -120,14 +112,21 @@ def test_collect_writes_back_to_original_owner(tmp_path):
     assert not (vault / "h1" / "memory" / "common.md").exists()   # 没在本机复制孪生体
     assert "新" in (vault / "shared" / "memory" / "common.md").read_text(encoding="utf-8")
 
-def test_collect_scans_both_claude_and_codex(tmp_path):
-    # 本机内 Claude 与 Codex 的记忆双向共享：两边的源都要收进金库
+def test_collect_only_reads_claude_source(tmp_path):
+    # device.toml 的源按工具分([sources.claude] / [sources.codex])。collect 目前只读
+    # claude 的 memory 源——Codex 没有人写的记忆文件可收(它的记忆是 sqlite 内部流水线，
+    # 见 hub/scaffold_vault.py 里的说明)。Task 6 会重写这条命令，届时再展开。
     vault = tmp_path / "vault"; _mk_vault(vault, "h1")
     claude = tmp_path / "claudemem"; claude.mkdir()
     codex = tmp_path / "codexmem"; codex.mkdir()
     (claude / "a.md").write_text(_mem("from_claude"), encoding="utf-8")
     (codex / "b.md").write_text(_mem("from_codex"), encoding="utf-8")
-    _set_collect_sources(vault, "h1", claude, codex)
+    dev_toml = vault / "h1" / "device.toml"
+    dev_toml.write_text(
+        dev_toml.read_text(encoding="utf-8") +
+        f'\n[sources.claude]\nmemory = ["{claude.as_posix()}"]\n'
+        f'\n[sources.codex]\nmemory = ["{codex.as_posix()}"]\n',
+        encoding="utf-8")
     assert main(["collect", "--vault", str(vault), "--host", "h1"]) == 0
     assert (vault / "h1" / "memory" / "from_claude.md").exists()
-    assert (vault / "h1" / "memory" / "from_codex.md").exists()
+    assert not (vault / "h1" / "memory" / "from_codex.md").exists()
