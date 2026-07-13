@@ -14,6 +14,22 @@ def _make_tar_bytes() -> bytes:
         tf.addfile(info, io.BytesIO(data))
     return buf.getvalue()
 
+def _make_tar_with_secrets() -> bytes:
+    """secrets/token.md、.env、README.md(正常)、secretsanta.md(易误伤的相似名)。"""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        for name, content in (
+            ("secrets/token.md", b"top-secret-token"),
+            (".env", b"SECRET=1"),
+            ("README.md", b"normal readme"),
+            ("secretsanta.md", b"holiday plan"),
+        ):
+            data = content
+            info = tarfile.TarInfo(name=name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
 def test_write_text_creates_parents(tmp_path):
     w = Writer()
     w.write_text(tmp_path / "a" / "b.md", "hi\n")
@@ -176,3 +192,54 @@ def test_dry_run_extract_tar_changes_nothing(tmp_path):
     assert (dest / "stale.txt").read_text(encoding="utf-8") == "stale"
     assert not (dest / "src").exists()          # tar 的内容一个字节都没落盘
     assert w.written == [dest]                  # 但报告说它"会"写
+
+def test_extract_tar_skips_secrets_dir_member(tmp_path):
+    """secrets/token.md 这个 tar 成员必须被剔除,不落进 dest。"""
+    dest = tmp_path / "d"
+    Writer().extract_tar(dest, _make_tar_with_secrets())
+    assert not (dest / "secrets").exists()
+    assert not (dest / "secrets" / "token.md").exists()
+
+def test_extract_tar_skips_dotenv_member(tmp_path):
+    """.env 这个 tar 成员必须被剔除,不落进 dest。"""
+    dest = tmp_path / "d"
+    Writer().extract_tar(dest, _make_tar_with_secrets())
+    assert not (dest / ".env").exists()
+
+def test_extract_tar_keeps_normal_siblings(tmp_path):
+    """挡是精确的:被挡成员的同级正常成员必须原样解出——只断言"消失"不够,
+    极端情况下 extract_tar 什么都没解也会让"消失"断言通过。"""
+    dest = tmp_path / "d"
+    Writer().extract_tar(dest, _make_tar_with_secrets())
+    assert (dest / "README.md").read_text(encoding="utf-8") == "normal readme"
+    assert (dest / "secretsanta.md").read_text(encoding="utf-8") == "holiday plan"
+
+def test_extract_tar_e2e_committed_secrets_excluded_from_vault(tmp_path):
+    """端到端:一个真实 git 仓,secrets/ 目录和 .env 文件都是**已提交**内容
+    (不是未跟踪文件——git archive 天然不含未跟踪文件,那不是本测试要证明的东西)。
+    经 snapshot.snapshot_repo() → Writer.extract_tar() 落进金库后,两者都不该
+    出现在 dest,而普通的已提交文件正常出现。
+    """
+    from hub.snapshot import snapshot_repo
+
+    repo = tmp_path / "myplugin"
+    (repo / "secrets").mkdir(parents=True)
+    (repo / "secrets" / "token.md").write_text("top-secret-token", encoding="utf-8")
+    (repo / ".env").write_text("SECRET=1", encoding="utf-8")
+    (repo / "README.md").write_text("normal readme", encoding="utf-8")
+
+    for args in (
+        ["init", "-q"],
+        ["config", "user.email", "t@t"],
+        ["config", "user.name", "t"],
+        ["add", "-A"],
+        ["commit", "-qm", "init incl. committed secrets"],
+    ):
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+
+    dest = tmp_path / "vault" / "myplugin"
+    snapshot_repo(repo, dest, Writer())
+
+    assert (dest / "README.md").read_text(encoding="utf-8") == "normal readme"
+    assert not (dest / "secrets").exists()
+    assert not (dest / ".env").exists()
