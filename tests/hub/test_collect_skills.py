@@ -76,6 +76,31 @@ def test_dry_run_writes_nothing(tmp_path):
     # src 的内容一个字节都不该落进 dest
     assert not (dest / "alpha").exists()
 
+def test_empty_source_keeps_the_scaffolded_gitkeep(tmp_path):
+    """最终评审 finding 9:源里一把 skill 都没有时,rmtree 把 dest 整个铲掉就再也不建回来
+    —— 连 scaffold 铺的 .gitkeep 一起没了,于是 git 把这个目录整个丢掉,金库骨架破了一个洞。
+    """
+    src = tmp_path / "skills"
+    src.mkdir()                                   # 本机一把 skill 都没有(或全删了)
+    dest = tmp_path / "vault" / "skills"
+    dest.mkdir(parents=True)
+    (dest / ".gitkeep").write_text("", encoding="utf-8")     # scaffold 铺的
+
+    assert collect_skills(src, dest, Writer()) == []
+
+    assert dest.is_dir()
+    assert (dest / ".gitkeep").exists()           # 骨架活下来
+
+def test_empty_source_gitkeep_goes_through_the_writer(tmp_path):
+    """补 .gitkeep 也必须走 Writer —— dry-run 下一个字节都不许落盘。"""
+    src = tmp_path / "skills"
+    src.mkdir()
+    dest = tmp_path / "vault" / "skills"
+    w = Writer(dry_run=True)
+    collect_skills(src, dest, w)
+    assert not dest.exists()                      # dry-run:什么都没建
+    assert (dest / ".gitkeep") in w.written       # 但报告说它"会"写
+
 def test_loose_files_at_skills_root_are_ignored(tmp_path):
     src = tmp_path / "skills"
     src.mkdir()

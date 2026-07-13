@@ -31,4 +31,9 @@ def collect_skills(src: Path | None, dest: Path, w: Writer) -> list[str]:
         else:
             w.copy_tree(d, dest / d.name)
         names.append(d.name)
+    if not names:
+        # 源里一把 skill 都没有:上面那记 rmtree 把 dest 整个铲了,再也没建回来——
+        # 连 scaffold 铺的 .gitkeep 一起没了,于是 git 把这个目录整个丢掉,金库骨架
+        # 破一个洞。补回来(走 Writer,dry-run 下照样一个字节不落盘)。
+        w.write_text(dest / ".gitkeep", "")
     return names
