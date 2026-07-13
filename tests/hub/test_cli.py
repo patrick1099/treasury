@@ -1,3 +1,4 @@
+import json
 import subprocess
 from pathlib import Path
 from hub.cli import main
@@ -95,7 +96,8 @@ def test_collect_lands_in_own_device_folder(tmp_path):
     src = tmp_path / "toolmem"; src.mkdir()
     (src / "new.md").write_text(_mem("newmem"), encoding="utf-8")
     _set_collect_sources(vault, "h1", src)
-    rc = main(["collect", "--vault", str(vault), "--host", "h1"])
+    # m1(_mk_vault 预置)在新源里已经没有了 -> 会触发删除确认，用 --yes 跳过交互
+    rc = main(["collect", "--vault", str(vault), "--host", "h1", "--yes"])
     assert rc == 0
     assert (vault / "h1" / "claude" / "memory" / "newmem.md").exists()
 
@@ -109,7 +111,7 @@ def test_collect_never_writes_into_shared(tmp_path):
     src = tmp_path / "toolmem"; src.mkdir()
     (src / "common.md").write_text(_mem("common", body="新"), encoding="utf-8")
     _set_collect_sources(vault, "h1", src)
-    assert main(["collect", "--vault", str(vault), "--host", "h1"]) == 0
+    assert main(["collect", "--vault", str(vault), "--host", "h1", "--yes"]) == 0
     assert "新" in (vault / "h1" / "claude" / "memory" / "common.md").read_text(encoding="utf-8")
     assert "旧" in (vault / "shared" / "memory" / "common.md").read_text(encoding="utf-8")
 
@@ -128,6 +130,140 @@ def test_collect_only_reads_claude_source(tmp_path):
         f'\n[sources.claude]\nmemory = ["{claude.as_posix()}"]\n'
         f'\n[sources.codex]\nmemory = ["{codex.as_posix()}"]\n',
         encoding="utf-8")
-    assert main(["collect", "--vault", str(vault), "--host", "h1"]) == 0
+    assert main(["collect", "--vault", str(vault), "--host", "h1", "--yes"]) == 0
     assert (vault / "h1" / "claude" / "memory" / "from_claude.md").exists()
     assert not (vault / "h1" / "claude" / "memory" / "from_codex.md").exists()
+
+
+# ---- Task 11: collect 汇总四条流水线 + bootstrap ----
+# 下面这组测试用独立命名的 _mk_backup_vault(而不是复用上面 sync/旧 collect 用的
+# _mk_vault),避免签名冲突(上面的 _mk_vault(root, host) 直接写进传入的 root；
+# 这里的版本自己在 tmp_path 下开 vault/ 子目录、顺带 git init，两者语义不同，
+# 硬改名共用只会让两组测试互相踩)。
+
+def _mk_backup_vault(tmp_path: Path, host: str = "box1") -> Path:
+    v = tmp_path / "vault"
+    (v / host / "claude" / "memory").mkdir(parents=True)
+    (v / "shared" / "memory").mkdir(parents=True)
+    (v / "vault.toml").write_text("version = 1\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=v, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=v, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=v, check=True)
+    return v
+
+def _mk_sources(tmp_path: Path) -> dict:
+    mem = tmp_path / "cl" / "projects" / "p" / "memory"
+    mem.mkdir(parents=True)
+    (mem / "a.md").write_text(
+        "---\nname: a\ndescription: a 摘要\nmetadata:\n  type: reference\n"
+        "  scope: [global]\n---\n正文\n", encoding="utf-8")
+    sk = tmp_path / "cl" / "skills" / "alpha"
+    sk.mkdir(parents=True)
+    (sk / "SKILL.md").write_text("# alpha\n", encoding="utf-8")
+    st = tmp_path / "cl" / "settings.json"
+    st.write_text(json.dumps({"enabledPlugins": {"x@m": True}}), encoding="utf-8")
+    return {"memory": [mem.as_posix()], "skills": (tmp_path / "cl" / "skills").as_posix(),
+            "settings": st.as_posix()}
+
+def _write_device(v: Path, host: str, s: dict):
+    (v / host / "device.toml").write_text(
+        'class = ["work"]\nprojects = []\n\n[paths]\n'
+        f'CLAUDE_HOME = "{(v.parent / "cl").as_posix()}"\n\n'
+        "[sources.claude]\n"
+        f'memory = ["{s["memory"][0]}"]\n'
+        f'skills = "{s["skills"]}"\n'
+        f'settings = "{s["settings"]}"\n',
+        encoding="utf-8")
+
+def test_collect_fills_backup_zone(tmp_path):
+    v = _mk_backup_vault(tmp_path)
+    _write_device(v, "box1", _mk_sources(tmp_path))
+    assert main(["collect", "--vault", str(v), "--host", "box1", "--yes"]) == 0
+    assert (v / "box1" / "claude" / "memory" / "a.md").exists()
+    assert (v / "box1" / "claude" / "skills" / "alpha" / "SKILL.md").exists()
+    assert (v / "box1" / "claude" / "plugins.toml").exists()
+
+def test_collect_dry_run_writes_nothing(tmp_path):
+    v = _mk_backup_vault(tmp_path)
+    _write_device(v, "box1", _mk_sources(tmp_path))
+    assert main(["collect", "--vault", str(v), "--host", "box1", "--dry-run"]) == 0
+    assert not (v / "box1" / "claude" / "memory" / "a.md").exists()
+    assert not (v / "box1" / "claude" / "skills").exists()
+
+def test_collect_dry_run_preserves_existing_content(tmp_path):
+    # 空目录/不存在这类断言容易写成 vacuous test(没建过目标就断言它不存在)。
+    # 这里先在目标位置放真内容，--dry-run 后逐字节校验它原封不动。
+    v = _mk_backup_vault(tmp_path)
+    _write_device(v, "box1", _mk_sources(tmp_path))
+    existing = v / "box1" / "claude" / "memory" / "old.md"
+    existing.write_text(
+        "---\nname: old\ndescription: d\nmetadata:\n  type: reference\n"
+        "  scope: [global]\n---\n旧内容\n", encoding="utf-8")
+    before = existing.read_bytes()
+    assert main(["collect", "--vault", str(v), "--host", "box1", "--dry-run"]) == 0
+    assert existing.read_bytes() == before
+
+def test_collect_never_touches_shared(tmp_path):
+    v = _mk_backup_vault(tmp_path)
+    _write_device(v, "box1", _mk_sources(tmp_path))
+    pooled = v / "shared" / "memory" / "p.md"
+    pooled.write_text("---\nname: p\ndescription: d\n---\n公共\n", encoding="utf-8")
+    before = pooled.read_bytes()
+    main(["collect", "--vault", str(v), "--host", "box1", "--yes"])
+    assert pooled.read_bytes() == before
+
+def test_collect_regenerates_index(tmp_path):
+    v = _mk_backup_vault(tmp_path)
+    _write_device(v, "box1", _mk_sources(tmp_path))
+    main(["collect", "--vault", str(v), "--host", "box1", "--yes"])
+    idx = (v / "MEMORY.md").read_text(encoding="utf-8")
+    assert "[a](box1/claude/memory/a.md)" in idx
+
+def test_collect_without_yes_aborts_when_it_would_delete(tmp_path, monkeypatch, capsys):
+    v = _mk_backup_vault(tmp_path)
+    _write_device(v, "box1", _mk_sources(tmp_path))
+    stale = v / "box1" / "claude" / "memory" / "gone.md"
+    stale.write_text("---\nname: gone\ndescription: d\n---\n旧\n", encoding="utf-8")
+    monkeypatch.setattr("builtins.input", lambda _: "n")
+    assert main(["collect", "--vault", str(v), "--host", "box1"]) == 1
+    assert stale.exists()                         # 没确认就不删
+    assert "gone" in capsys.readouterr().out      # 但要把要删的列出来
+
+
+def test_bootstrap_installs_loader_skill_into_tool_home(tmp_path):
+    v = _mk_backup_vault(tmp_path)
+    loader = v / "shared" / "skills" / "hub-loader"
+    loader.mkdir(parents=True)
+    (loader / "SKILL.md").write_text("# loader\n", encoding="utf-8")
+    claude_home = tmp_path / "cl"
+    (v / "box1" / "device.toml").write_text(
+        'class = ["work"]\nprojects = []\n\n[paths]\n'
+        f'CLAUDE_HOME = "{claude_home.as_posix()}"\n',
+        encoding="utf-8")
+    assert main(["bootstrap", "--vault", str(v), "--host", "box1"]) == 0
+    assert (claude_home / "skills" / "hub-loader" / "SKILL.md").exists()
+
+def test_bootstrap_dry_run_preserves_existing_content(tmp_path):
+    v = _mk_backup_vault(tmp_path)
+    loader = v / "shared" / "skills" / "hub-loader"
+    loader.mkdir(parents=True)
+    (loader / "SKILL.md").write_text("# 新版\n", encoding="utf-8")
+    claude_home = tmp_path / "cl"
+    dest = claude_home / "skills" / "hub-loader"
+    dest.mkdir(parents=True)
+    (dest / "SKILL.md").write_text("# 旧版真实内容\n", encoding="utf-8")
+    before = (dest / "SKILL.md").read_bytes()
+    (v / "box1" / "device.toml").write_text(
+        'class = ["work"]\nprojects = []\n\n[paths]\n'
+        f'CLAUDE_HOME = "{claude_home.as_posix()}"\n',
+        encoding="utf-8")
+    assert main(["bootstrap", "--vault", str(v), "--host", "box1", "--dry-run"]) == 0
+    assert (dest / "SKILL.md").read_bytes() == before
+
+def test_bootstrap_without_loader_skills_returns_1(tmp_path):
+    v = _mk_backup_vault(tmp_path)
+    (v / "box1" / "device.toml").write_text(
+        'class = ["work"]\nprojects = []\n\n[paths]\n'
+        f'CLAUDE_HOME = "{(tmp_path / "cl").as_posix()}"\n',
+        encoding="utf-8")
+    assert main(["bootstrap", "--vault", str(v), "--host", "box1"]) == 1
