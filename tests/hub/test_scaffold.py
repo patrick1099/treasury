@@ -67,6 +67,25 @@ def test_schema_md_does_not_repeat_the_false_claims(tmp_path):
     # §8:codex 的 plugins.toml 永远没有 [repos.*]
     assert "永远没有** `[repos.*]`" in s
 
+    # ---- 最终评审补的几条(2026-07-13)----
+
+    # §10(finding 7):曾经写着加新设备时"已有的东西一个字节都不动" —— 假的,
+    # scaffold **无条件重写 SCHEMA.md**。而且这条假话背后有个真坑:老版本的 hub
+    # 往新金库里 scaffold,会把契约静默降级。
+    assert "一个字节都不动" not in s          # 那句假话不许漂回来
+    assert "静默降级" in s
+
+    # §3(finding 1):配了但路径不存在 = 配置错误 → 抛错中止,不是"工具没装"
+    assert "路径不存在" in s
+    assert "抛错中止" in s
+
+    # §8/§12(finding 2):hooks 写不出来只跳过那一张表,不再让整份 collect 暴毙
+    assert "被跳过" in s
+
+    # §2(finding 4):提取器不认识的键原样带着走
+    assert "原样带着走" in s
+    assert "originSessionId" in s
+
 def test_dry_run_creates_nothing(tmp_path):
     scaffold(tmp_path, "box1", Writer(dry_run=True))
     # 断言到"一个条目都没有"这一层：只查 vault.toml 的话，scaffold 里偷摸加一句
