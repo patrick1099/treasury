@@ -1,5 +1,7 @@
+import io
 import json
 import subprocess
+import sys
 from pathlib import Path
 from hub.cli import main
 from hub.backend import GitBackend
@@ -267,3 +269,52 @@ def test_bootstrap_without_loader_skills_returns_1(tmp_path):
         f'CLAUDE_HOME = "{(tmp_path / "cl").as_posix()}"\n',
         encoding="utf-8")
     assert main(["bootstrap", "--vault", str(v), "--host", "box1"]) == 1
+
+
+# ---- Task 11 review: Finding 2 (⚠ on a GBK console) + Finding 3 (dry-run wording) ----
+
+def test_secret_scan_warning_survives_gbk_stdout(tmp_path, monkeypatch):
+    """本机 py -3 -c "print(sys.stdout.encoding)" 报 gbk,gbk 编不出 U+26A0(⚠)。
+    secrets-scan 命中时 cli.py 直接 print() 含 ⚠ 的警告——一旦命中,唯一该报警的
+    时刻反而以 UnicodeEncodeError 崩溃。用一个 encoding=gbk/errors=strict 的
+    TextIOWrapper 顶替 sys.stdout 来复现同款失败,不依赖真实控制台编码。"""
+    v = _mk_backup_vault(tmp_path)
+    src = tmp_path / "toolmem"
+    src.mkdir()
+    (src / "leak.md").write_text(
+        _mem("leak", body="sk-" + "a" * 25), encoding="utf-8")
+    (v / "box1" / "device.toml").write_text(
+        'class = ["work"]\nprojects = []\n\n[paths]\n\n'
+        f'[sources.claude]\nmemory = ["{src.as_posix()}"]\n',
+        encoding="utf-8")
+
+    buf = io.BytesIO()
+    fake_stdout = io.TextIOWrapper(buf, encoding="gbk", errors="strict")
+    monkeypatch.setattr(sys, "stdout", fake_stdout)
+    try:
+        rc = main(["collect", "--vault", str(v), "--host", "box1", "--yes"])
+    finally:
+        fake_stdout.flush()
+    assert rc == 0
+    printed = buf.getvalue().decode("gbk")
+    assert "疑似密钥" in printed        # 警告真的印出来了，不是被吞掉
+
+def test_bootstrap_dry_run_message_is_not_past_tense(tmp_path):
+    """Finding 3: --dry-run 下什么都没装，措辞不能用"已装"这种既成事实的过去式。"""
+    v = _mk_backup_vault(tmp_path)
+    loader = v / "shared" / "skills" / "hub-loader"
+    loader.mkdir(parents=True)
+    (loader / "SKILL.md").write_text("# loader\n", encoding="utf-8")
+    claude_home = tmp_path / "cl"
+    (v / "box1" / "device.toml").write_text(
+        'class = ["work"]\nprojects = []\n\n[paths]\n'
+        f'CLAUDE_HOME = "{claude_home.as_posix()}"\n',
+        encoding="utf-8")
+    import io as _io
+    import contextlib
+    out = _io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = main(["bootstrap", "--vault", str(v), "--host", "box1", "--dry-run"])
+    assert rc == 0
+    assert not (claude_home / "skills" / "hub-loader").exists()   # 真没装
+    assert "已装" not in out.getvalue()
