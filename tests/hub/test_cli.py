@@ -97,11 +97,12 @@ def test_collect_lands_in_own_device_folder(tmp_path):
     _set_collect_sources(vault, "h1", src)
     rc = main(["collect", "--vault", str(vault), "--host", "h1"])
     assert rc == 0
-    assert (vault / "h1" / "memory" / "newmem.md").exists()
+    assert (vault / "h1" / "claude" / "memory" / "newmem.md").exists()
 
-def test_collect_writes_back_to_original_owner(tmp_path):
-    # 公共池的记忆被 pull 到工具目录、又被 collect 收回来时，必须写回 shared/，
-    # 不能在本机文件夹里复制出一个孪生体（否则就是回环污染）
+def test_collect_never_writes_into_shared(tmp_path):
+    # 镜像语义：collect 只镜像本机自己那一块，shared/ 碰都不碰——即便金库里
+    # 已有同名记忆躺在 shared/，本机 collect 也只写自己的 <host>/claude/memory/，
+    # 绝不去改共享区（那是回环污染的老行为，已废弃）。
     vault = tmp_path / "vault"; _mk_vault(vault, "h1")
     (vault / "shared" / "memory" / "common.md").write_text(_mem("common", body="旧"),
                                                            encoding="utf-8")
@@ -109,8 +110,8 @@ def test_collect_writes_back_to_original_owner(tmp_path):
     (src / "common.md").write_text(_mem("common", body="新"), encoding="utf-8")
     _set_collect_sources(vault, "h1", src)
     assert main(["collect", "--vault", str(vault), "--host", "h1"]) == 0
-    assert not (vault / "h1" / "memory" / "common.md").exists()   # 没在本机复制孪生体
-    assert "新" in (vault / "shared" / "memory" / "common.md").read_text(encoding="utf-8")
+    assert "新" in (vault / "h1" / "claude" / "memory" / "common.md").read_text(encoding="utf-8")
+    assert "旧" in (vault / "shared" / "memory" / "common.md").read_text(encoding="utf-8")
 
 def test_collect_only_reads_claude_source(tmp_path):
     # device.toml 的源按工具分([sources.claude] / [sources.codex])。collect 目前只读
@@ -128,5 +129,5 @@ def test_collect_only_reads_claude_source(tmp_path):
         f'\n[sources.codex]\nmemory = ["{codex.as_posix()}"]\n',
         encoding="utf-8")
     assert main(["collect", "--vault", str(vault), "--host", "h1"]) == 0
-    assert (vault / "h1" / "memory" / "from_claude.md").exists()
-    assert not (vault / "h1" / "memory" / "from_codex.md").exists()
+    assert (vault / "h1" / "claude" / "memory" / "from_claude.md").exists()
+    assert not (vault / "h1" / "claude" / "memory" / "from_codex.md").exists()
