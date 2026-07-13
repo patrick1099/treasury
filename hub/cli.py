@@ -25,7 +25,8 @@ def _cmd_collect(args) -> int:
     vault_root = Path(args.vault)
     host = args.host or current_host()
     dev = load_device(vault_root, host)
-    sources = [Path(s) for s in dev.collect_sources]
+    src = dev.sources.get("claude")
+    sources = [Path(s) for s in (src.memory if src else [])]
     collected = collect_memories(sources, vault_root, host)
     print(f"collected {len(collected)} memories: {collected}")
     return 0
@@ -52,7 +53,7 @@ def _cmd_sync(args) -> int:
 
 def _write_index(vault_root: Path, vault) -> None:
     (vault_root / "MEMORY.md").write_text(
-        render_memory_index(vault.memories), encoding="utf-8", newline="\n")
+        render_memory_index(vault.memories, vault_root), encoding="utf-8", newline="\n")
 
 def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
