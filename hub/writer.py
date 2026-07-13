@@ -4,7 +4,9 @@
 配置式预览的失败模式是"照真实的写"(最危险的方向);闸在写函数里的失败模式是
 "什么都不写"。这条是 2026-07-12 用一次真实事故换来的。
 """
+import io
 import shutil
+import tarfile
 from pathlib import Path
 
 class Writer:
@@ -59,3 +61,20 @@ class Writer:
             return
         shutil.copytree(src, dest)
         self.written.append(Path(dest))
+
+    def extract_tar(self, dest: Path, tar_bytes: bytes) -> None:
+        """快照的全量重写:先清空 dest,再把 tar 字节流整个解出去。
+
+        不做增量——快照的真源永远在别处(某个 git 仓的 HEAD),金库这份改了也白改。
+        filter="data" 是安全要求:拒绝归档里的绝对路径、`..` 穿越和特殊文件。
+        """
+        dest = Path(dest)
+        self.rmtree(dest)
+        if self.dry_run:
+            print(f"  [dry-run] 解包 → {dest}")
+            self.written.append(dest)
+            return
+        dest.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(fileobj=io.BytesIO(tar_bytes)) as tf:
+            tf.extractall(dest, filter="data")
+        self.written.append(dest)
