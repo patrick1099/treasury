@@ -47,6 +47,7 @@ def collect_claude_decl(plugin_repos: Path | None, settings: Path | None,
         check_source(plugin_repos)
         if plugin_repos.is_dir():
             for d in sorted(p for p in plugin_repos.iterdir() if p.is_dir()):
+                check_source(d)                 # 硬闸:每个插件仓目录
                 if not is_git_repo(d):
                     continue                    # 不是插件仓（如 plugins-dev/docs）
                 meta = snapshot_repo(d, dest_dir / "plugins" / d.name, w)
