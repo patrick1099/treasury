@@ -25,23 +25,36 @@ SCHEMA_MD = """# 金库 SCHEMA —— hub 与各工具 skill 之间的契约
 唯一例外是 `hub bootstrap`(新机上把加载器 skill 装进工具,打破"skill 自己也在金库里"
 这个鸡生蛋),且只写各工具的 `skills/` 目录。
 
+(表里说的是**日常**的 `hub collect` / `hub sync`。**建库**那一次 `hub-scaffold` 另算:
+它铺金库根的 `vault.toml` / `SCHEMA.md` / `lint-exempt.txt`、`shared/` 的空目录骨架、
+以及 `<本机>/device.toml`。见 §1、§10。)
+
 ## 1. 两个区
 
     vault/
     ├─ vault.toml        金库格式版本(version = 1)。以后改布局靠它做迁移判断
     ├─ SCHEMA.md         就是本文件
-    ├─ MEMORY.md         全部记忆的索引(派生物,勿手改——见 §5)
+    ├─ MEMORY.md         ✳ 全部记忆的索引(派生物,勿手改——见 §5)
     ├─ lint-exempt.txt   裸路径检查的豁免名单(见 §4)
     │
     ├─ <设备名>/          ┃ 备份区:这台机的原始数据,原样、不加工
     │   ├─ device.toml   本机档案(见 §3)
-    │   ├─ merged.txt    ┓ 跨设备人工闸门,由 skill 维护(见 §7)
-    │   ├─ rejected.txt  ┛
+    │   ├─ merged.txt    ✳ ┓ 跨设备人工闸门,由 skill 维护(见 §7)
+    │   ├─ rejected.txt  ✳ ┛
     │   ├─ claude/  memory/ skills/ plugins/ hooks/ chats/ plugins.toml CLAUDE.md
     │   └─ codex/   skills/ hooks/ chats/ plugins.toml AGENTS.md
     │
     └─ shared/           ┃ 共享区:跨设备/跨工具的精选,按类型分
         └─ memory/ skills/ plugins/ hooks/ chats/
+
+**✳ 标的三个文件,刚建出来的金库里根本不存在。** `hub-scaffold` 只铺 `vault.toml` /
+`SCHEMA.md` / `lint-exempt.txt` / 空目录骨架 / `<设备名>/device.toml`。
+
+- `MEMORY.md` 第一次 `hub collect` 或 `hub sync` 才生成(见 §5)。
+- `merged.txt` / `rejected.txt` 是**你**(加载器)要建的(见 §7)。
+
+**别把"文件不在"当成错误或当成金库损坏**——它就是"还没跑过 collect" / "还没审过
+别的设备的记忆"。**不存在 = 空**,照空的走就对了。
 
 **备份区 = "别丢"**。换机照它还原。**按工具分**,因为原始数据本来就是工具形状的。
 
@@ -72,23 +85,46 @@ metadata:
 
 ### frontmatter 是 YAML 的一个**受控子集**,不是完整 YAML
 
-提取器自带一个小解析器(不依赖 PyYAML)。**它不剥引号。** 你按标准 YAML 的习惯写
-`name: "my-note"`,提取器拿到的 `name` 就是**带引号的那 9 个字符**,随后会去写一个
-文件名里带引号的文件(NTFS 上非法);`scope: ["global"]` 会被解析成 `['"global"']`,
-scope 校验判它非法,`hub sync` 直接停住。
-
-**只准用这些**:
+提取器自带一个小解析器(不依赖 PyYAML)。**能用这些**:
 
 | 允许 | 写法 |
 |---|---|
-| 不带引号的纯标量 | `name: my-note` |
-| 布尔(**小写**) | `portable: true` / `sensitive: false` |
+| 纯标量 | `name: my-note` |
+| 布尔(**小写、不加引号**) | `portable: true` / `sensitive: false` |
 | 行内列表 | `scope: [global]` / `scope: [device:work, tool:claude]` |
 | 块状列表 | `scope:` 换行,下面 `  - device:work` |
 | **一层**嵌套(只有 `metadata:` 用到) | 见上例 |
 
-**不准用**:引号、锚点/别名、多行标量(`|` / `>`)、两层以上嵌套、行内注释。
-越界不会被静默吞掉——提取器抛错并**点名是哪个文件**。
+**不准用**:锚点/别名、多行标量(`|` / `>`)、两层以上嵌套、**行内注释**。
+结构越界不会被静默吞掉——提取器抛错并**点名是哪个文件**。
+
+#### 引号:剥一层配对的外层引号
+
+`description: "摘要"` → 值是 `摘要`(引号剥掉)。标量、行内列表项、块状列表项都剥。
+`scope: ["global"]` → `['global']`,合法。
+
+只剥**首尾同一个引号字符**的那一层,而且只剥一层。内层引号原样活下来:
+`description: "别把重心压在'我认为重要的风险'上"` → `别把重心压在'我认为重要的风险'上`。
+首尾对不上(如 `他说'这样'不行`)→ 一个字都不动。
+
+**带引号的标量一律是字符串**(标准 YAML 也这么读)。所以 `sensitive: "false"` 是
+**字符串** `false`,不是布尔——见下条,它会炸。
+
+#### `portable` / `sensitive` 必须是**真布尔**,否则抛错
+
+这两个位控制"这条记忆入不入库",错一个字就是静默丢数据,所以解析得寸步不让:
+写了就必须是 `true` / `false` 字面量;**任何**别的东西(带引号的、`yes`、
+带行内注释的)→ `FrontmatterError`,点名**文件、字段、那个冒犯的值**。
+键**缺失**则用默认值(`portable: true` / `sensitive: false`),那是正常的,不报错。
+
+#### 行内注释**不剥**——这是本子集最锋利的边
+
+解析器不做 YAML 注释剥离(硬剥会毁掉任何正当含 ` # ` 的 `description`)。后果:
+
+    sensitive: false  # 不入库      ← 值是字符串 "false  # 不入库" → **抛错**(上一条)
+    description: 摘要  # 备注        ← 值是 "摘要  # 备注",`# 备注` **静默**成了摘要的一部分
+
+第一种炸得响,第二种**不报错**。**frontmatter 里一律别写行内注释。**
 
 ### scope
 
@@ -174,6 +210,12 @@ agents = "C:/Users/x/.codex/AGENTS.md"
 **每次 `hub collect` 和 `hub sync` 都整份重算、整份重写。** 手改必被覆盖——要改内容,
 去改记忆文件自己的 frontmatter。
 
+**它可能不在。** 刚 scaffold 出来、还没跑过 `hub collect` 的金库里没有 `MEMORY.md`
+(见 §1)。**不在 = 金库里还没有记忆**,不是损坏,不要报错、不要自己动手生成一份
+(下次 collect 会整份覆盖,你写的白写)。要么当空的走,要么提示用户先跑一次
+`hub collect`。同理:索引里**没有**的记忆,金库里就是没有——照索引走即可,
+不必自己去遍历 `*/memory/` 兜底。
+
 ## 6. 同一个名字同时出现在两个区
 
 **这是正常的,不是错。** 一条记忆被提升进 `shared/` 之后,它在 `~/.claude` 里还在,
@@ -232,6 +274,11 @@ xu-local = "directory:C:\\\\Users\\\\x\\\\.claude\\\\plugins-dev"
 **第三方插件只抄声明,不拷源码**(别人的代码,市场还在就能重装;里面是 LSP 二进制,
 换台 Mac 就是废的)。
 
+**`[repos.*]` 只可能出现在 `<设备>/claude/plugins.toml` 里。** 自有插件仓这条流水线
+只接了 Claude 的 `plugin_repos`(见 §3);Codex 那份 `plugins.toml` 只有 `[enabled]` /
+`[marketplaces]`,**永远没有** `[repos.*]`,同级也永远没有 `plugins/` 快照目录。
+那不代表"Codex 没有自有插件",只代表**提取器压根没去收**。
+
 **`[hooks]` 的现状必须说清楚**:它抄的是 `settings.json` / `config.toml` 里的 `hooks` 键。
 当前 Claude 的用户级 `settings.json` **没有** `hooks` 键(hook 全在插件里),Codex 也没有,
 所以这张表通常根本不出现。**而且提取器现在也写不了它**:内置的 TOML 写出器只支持
@@ -253,8 +300,29 @@ xu-local = "directory:C:\\\\Users\\\\x\\\\.claude\\\\plugins-dev"
 | **`<设备>/` 自己** | **从不 rmtree**。所以 `device.toml` / `merged.txt` / `rejected.txt` 安全 |
 | `shared/` | **提取器从不写** |
 
-一句话:**别往 `<设备>/<工具>/skills/` 或 `plugins/` 里塞任何手写文件**——下次 collect
-就没了,而且不会报错。要放东西,放 `<设备>/` 根下(闸门文件那一层)或 `shared/`。
+粒度**恰好**是表里写的那样,别多读也别少读:
+
+- 被铲的是 `skills/` **整个目录**,和 `plugins/<仓名>/` **每个仓自己的目录**。
+- 直接放在 `plugins/` 底下(不在任何 `<仓名>/` 里面)的文件**不会**被铲——但那是
+  个没人管的角落,别指望它,也别往那儿放东西。
+- **`<设备>/<工具>/skills/` 里塞的任何手写文件,下次 collect 一定没,而且不报错。**
+
+要放东西,放 `<设备>/` 根下(闸门文件那一层)或 `shared/`。
+
+### 反过来:`plugins/` 里的快照**只增不减**
+
+记忆是**镜像**(源里删了 → 金库里也删),插件快照**不是**。提取器只会重写它这次
+**看见**的那些仓,从不去清理"金库里有、但源里已经没了"的仓。
+
+> 你从 `plugins-dev/` 里删掉一个插件仓 → `<设备>/claude/plugins/<名>/` 那份快照
+> **永远留在金库里**,而 `plugins.toml` 里**不再有**它的 `[repos.<名>]` 那一节。
+
+对 C 的意义:**`plugins.toml` 是清单,`plugins/` 目录不是。** 照着 `plugins/` 目录去还原,
+会把用户早就删掉的插件复活。**要还原自有插件,以 `plugins.toml` 的 `[repos.*]` 为准**,
+目录里多出来的就是历史垃圾。(顺带:`shared/` 那份提取器根本不写,更不会替你清。)
+
+`shared/` 的骨架(那几个空目录 + `.gitkeep`)是**建库**时 `hub-scaffold` 一次性铺的;
+`hub collect` / `hub sync` **从不**写 `shared/`,上面那张表里的"从不写"说的就是它俩。
 
 ## 10. 删除、冲突、多设备、传输
 
@@ -266,6 +334,11 @@ xu-local = "directory:C:\\\\Users\\\\x\\\\.claude\\\\plugins-dev"
 - **多设备**:金库是一个 **git 仓**。别的设备的数据**只有在你 pull 之后本地才存在**。
   加载器要自己决定要不要先 pull。提取器的 `hub sync` 会做 pull/push,但它不是加载器的
   一部分,别指望它替你拉。
+- **一台新机怎么加进来**:`git clone` 那个金库,再跑一次 `hub-scaffold <金库> <本机名>`。
+  它只**新增** `<本机名>/` 那棵子树(以及缺失的根文件),已有的东西一个字节都不动
+  ——`vault.toml` 和 `lint-exempt.txt` **已存在就绝不覆盖**,别的设备的目录更不碰。
+  **不需要 `--force`**。(`<本机名>/device.toml` 已经存在时它会**拒绝**:那是本机档案,
+  覆盖就是把你手填的源路径换回占位符。这时候你要的多半是 `hub collect`,不是重新建库。)
 - **零冲突从哪来**:每台设备只写自己那个文件夹,两台机器永远碰不到同一个文件,所以
   git 合并天然不冲突。**这个性质是靠"提取器只写 `<本机>/`"维持的**——加载器如果去写
   别的设备的目录,它就没了。
@@ -286,12 +359,32 @@ xu-local = "directory:C:\\\\Users\\\\x\\\\.claude\\\\plugins-dev"
 
 私密内容留在 `~/.claude/secrets/`,记忆里**只写指针**。
 
-**2. 快照只收 git 跟踪的文件——但这只对 git 仓成立。**
-skill 目录 / 插件仓**是 git 仓**时,用 `git archive HEAD` 打包:gitignored 和 untracked 的
-文件天然进不去(顺带解决"把带 `.git` 的目录拷进外层 git 仓会变成 gitlink 空壳、clone
-下来是空目录"这个更阴的问题)。
-**不是 git 仓**时(散装 skill——恰恰是"唯一副本"风险最高的那种),退化成整棵目录拷贝:
-**除了硬闸 1 挡掉的条目,里面什么都会被拷进去**,包括构建产物和临时文件。
+**2. 快照只收 git 跟踪的文件——而"不是 git 仓"时,两条流水线的行为完全不同。**
+
+**是 git 仓**时(两条流水线都一样):用 `git archive HEAD` 打包。gitignored 和 untracked
+的文件天然进不去(顺带解决"把带 `.git` 的目录拷进外层 git 仓会变成 gitlink 空壳、clone
+下来是空目录"这个更阴的问题)。快照取的是 **HEAD**——工作区里没提交的改动**不在**快照里
+(`plugins.toml` 的 `dirty = true` 就是在提醒这个)。
+
+**不是 git 仓**时,分开看:
+
+| 流水线 | 源 | 不是 git 仓时的行为 |
+|---|---|---|
+| **skill 目录**(两个工具都有) | `[sources.<工具>].skills` | **退化成整棵目录拷贝**:除了硬闸 1 挡掉的条目,里面什么都拷进去,包括构建产物和临时文件 |
+| **插件仓**(**只有 Claude**) | `[sources.claude].plugin_repos` | **整个跳过**。不拷源码、`plugins.toml` 里**没有** `[repos.<名>]` 那一节、**不打印任何警告** |
+
+散装 skill 走拷贝是**有意**的——散装 skill 恰恰是"唯一副本"风险最高的那种,宁可拷脏也不能丢。
+
+插件仓的跳过也是**有意**的:`plugins-dev/` 下面本来就有 `docs/` 这类不是插件仓的目录,
+提取器靠"有没有 `.git`"来认哪个是插件仓。**代价你必须知道**:
+
+> **一个手写的、还没 `git init` 的插件,躺在 `plugins-dev/` 里,是完全没有被备份的。**
+> 金库里没有它的源码,`plugins.toml` 里没有它的名字,`hub collect` 也不会吭一声。
+> 它在金库里就是**不存在**——换机还原之后,它没了。
+
+对 C 的意义:**别把"`plugins.toml` 里没列的插件"理解成"用户没装那个插件"**——也可能是
+用户写了但没 `git init`。你在金库里看不见它,也无从提醒。真要提醒用户,只能提醒他
+"给 `plugins-dev/` 下每个自己写的插件都 `git init` 并至少提交一次"。
 
 **3. `sensitive: true` 的记忆不入库。** 提取器跳过它,并在报告里列出**名字**(只列名字,
 不列内容)。等阶段 B(加密层)做完之后改成加密入库。

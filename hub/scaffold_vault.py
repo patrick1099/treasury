@@ -1,4 +1,4 @@
-"""脚手架:建一个空金库(两区结构 + SCHEMA.md)。"""
+"""脚手架:建一个空金库(两区结构 + SCHEMA.md),或把一台新设备加进已有金库。"""
 from pathlib import Path
 from hub.schema_md import SCHEMA_MD
 from hub.writer import Writer
