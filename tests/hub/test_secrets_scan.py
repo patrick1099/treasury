@@ -18,6 +18,14 @@ def test_does_not_fire_on_task_dash():
     assert scan_text("# task-fix3-report:收口\n", Path("a.md")) == []
 
 
+def test_boundary_suppresses_task_dash_even_when_long_enough():
+    # 上面那条短 fixture 靠 {20,} 长度不够就先被拦下了，边界 (?<![\w-]) 根本没被
+    # 测到——删掉它 6 个测试照样全绿。这条用真实的记忆文件标题长度撞满 {20,}，
+    # 让边界成为唯一挡住误报的东西：删掉 (?<![\w-]) 这条测试必须失败。
+    line = "task-fix3-report-detailed-explanation-of-what-happened-here\n"
+    assert scan_text(line, Path("a.md")) == []
+
+
 def test_does_not_fire_on_prose():
     assert scan_text("把 token 存进 secrets 目录,记忆里只留指针\n", Path("a.md")) == []
 
