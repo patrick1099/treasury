@@ -1,6 +1,7 @@
 import subprocess
 import pytest
 from pathlib import Path
+from hub.collect.errors import MissingSourceError
 from hub.collect.memory import plan_memory, collect_memory
 from hub.frontmatter import FrontmatterError
 from hub.guard import SecretPathError
@@ -76,10 +77,60 @@ def test_secrets_source_is_refused(tmp_path):
     with pytest.raises(SecretPathError):
         collect_memory([tmp_path / ".claude" / "secrets"], v, "box1", Writer())
 
-def test_missing_source_is_skipped_not_an_error(tmp_path):
+def test_no_source_configured_writes_nothing_and_deletes_nothing(tmp_path):
+    """工具没装 = device.toml 里压根没有那个源 → 什么都不做,**尤其不是"源里空了"**。
+
+    旧版这个测试只断言 r.written == [](还是对着一个**空**金库),r.deleted 碰都没碰,
+    所以它在"把金库里的记忆全删光"这个行为下**照样通过**——一个没有牙齿的测试。
+    这里先把金库填满,再断言删除集为空、文件逐字节还在。
+    """
     v = _vault(tmp_path)
-    r = collect_memory([tmp_path / "nope"], v, "box1", Writer())
-    assert r.written == []                    # 工具没装 = 正常，不是错误
+    home = v / "box1" / "claude" / "memory"
+    for n in ("m1", "m2", "m3"):
+        _mem(home, n)
+    before = {p.name: p.read_bytes() for p in home.glob("*.md")}
+
+    r = collect_memory([], v, "box1", Writer())      # 没有配任何记忆源
+
+    assert r.written == [] and r.deleted == []
+    assert {p.name: p.read_bytes() for p in home.glob("*.md")} == before
+
+def test_configured_but_missing_source_refuses_and_deletes_nothing(tmp_path):
+    """**配了、但那个目录不在** —— 这是配置错误,不是"用户把记忆全删了"。
+
+    旧行为:_scan() 把它当"工具没装"跳过 → 源侧零条记忆 → _diff() 把金库里**每一条**
+    记忆都算成 gone → collect_memory 全删。金库是这些记忆的**唯一备份**。
+    scaffold --force 会把 <占位> 模板写回 device.toml,正好构成这个状态。
+    """
+    v = _vault(tmp_path)
+    home = v / "box1" / "claude" / "memory"
+    for n in ("m1", "m2", "m3"):
+        _mem(home, n)
+    before = {p.name: p.read_bytes() for p in home.glob("*.md")}
+
+    missing = tmp_path / "nope" / "memory"
+    with pytest.raises(MissingSourceError, match="nope"):
+        collect_memory([missing], v, "box1", Writer())
+
+    assert {p.name: p.read_bytes() for p in home.glob("*.md")} == before   # 一条都没删
+
+def test_plan_also_refuses_configured_but_missing_source(tmp_path):
+    """预览与实际必须同一套判断——plan 不能把"会删 3 条"这种谎话拿去问人。"""
+    v = _vault(tmp_path)
+    _mem(v / "box1" / "claude" / "memory", "m1")
+    with pytest.raises(MissingSourceError):
+        plan_memory([tmp_path / "nope"], v, "box1")
+
+def test_empty_but_existing_source_still_mirror_deletes(tmp_path):
+    """反向的牙齿:源目录**在**、只是里面没有记忆了 —— 那才是真的"用户删光了",
+    镜像删除必须照常发生。修 finding 1 不能顺手把镜像语义一起阉掉。"""
+    v = _vault(tmp_path)
+    _mem(v / "box1" / "claude" / "memory", "m1")
+    src = tmp_path / "src"
+    src.mkdir()
+    r = collect_memory([src], v, "box1", Writer())
+    assert r.deleted == ["m1"]
+    assert not (v / "box1" / "claude" / "memory" / "m1.md").exists()
 
 def test_dry_run_writes_nothing(tmp_path):
     v = _vault(tmp_path)

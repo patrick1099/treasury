@@ -13,6 +13,7 @@ import json
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+from hub.collect.errors import require_source
 from hub.guard import check_source
 from hub.snapshot import RepoMeta, is_git_repo, snapshot_repo
 from hub.tomlout import dump_toml
@@ -45,26 +46,26 @@ def collect_claude_decl(plugin_repos: Path | None, settings: Path | None,
     if plugin_repos is not None:
         plugin_repos = Path(plugin_repos)
         check_source(plugin_repos)
-        if plugin_repos.is_dir():
-            for d in sorted(p for p in plugin_repos.iterdir() if p.is_dir()):
-                check_source(d)                 # 硬闸:每个插件仓目录
-                if not is_git_repo(d):
-                    continue                    # 不是插件仓（如 plugins-dev/docs）
-                meta = snapshot_repo(d, dest_dir / "plugins" / d.name, w)
-                r.repos.append(meta)
-                if meta.dirty:
-                    r.dirty.append(meta.name)
+        require_source(plugin_repos, "[sources.claude] plugin_repos")
+        for d in sorted(p for p in plugin_repos.iterdir() if p.is_dir()):
+            check_source(d)                 # 硬闸:每个插件仓目录
+            if not is_git_repo(d):
+                continue                    # 不是插件仓（如 plugins-dev/docs）
+            meta = snapshot_repo(d, dest_dir / "plugins" / d.name, w)
+            r.repos.append(meta)
+            if meta.dirty:
+                r.dirty.append(meta.name)
 
     if settings is not None:
         settings = Path(settings)
         check_source(settings)
-        if settings.is_file():
-            raw = json.loads(settings.read_text(encoding="utf-8"))
-            r.enabled = dict(raw.get("enabledPlugins", {}))
-            for name, spec in (raw.get("extraKnownMarketplaces") or {}).items():
-                s = (spec or {}).get("source", {})
-                r.marketplaces[name] = f"{s.get('source', '?')}:{s.get('path') or s.get('url', '')}"
-            r.hooks = raw.get("hooks") or {}
+        require_source(settings, "[sources.claude] settings", kind="file")
+        raw = json.loads(settings.read_text(encoding="utf-8"))
+        r.enabled = dict(raw.get("enabledPlugins", {}))
+        for name, spec in (raw.get("extraKnownMarketplaces") or {}).items():
+            s = (spec or {}).get("source", {})
+            r.marketplaces[name] = f"{s.get('source', '?')}:{s.get('path') or s.get('url', '')}"
+        r.hooks = raw.get("hooks") or {}
 
     _write_manifest(dest_dir, r, w)
     return r
@@ -76,9 +77,7 @@ def collect_codex_decl(config: Path | None, dest_dir: Path, w: Writer) -> DeclRe
         return r
     config = Path(config)
     check_source(config)
-    if not config.is_file():
-        _write_manifest(Path(dest_dir), r, w)
-        return r
+    require_source(config, "[sources.codex] settings", kind="file")
     raw = tomllib.loads(config.read_text(encoding="utf-8"))
     for name, spec in (raw.get("plugins") or {}).items():
         r.enabled[name] = bool(spec.get("enabled", False))

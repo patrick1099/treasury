@@ -5,6 +5,7 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 from hub.collect.decl import DeclResult, collect_claude_decl, collect_codex_decl
+from hub.collect.errors import MissingSourceError, require_source
 from hub.collect.memory import MemoryResult, collect_memory, plan_memory
 from hub.collect.skills import collect_skills
 from hub.guard import check_source
@@ -18,6 +19,31 @@ class CollectReport:
     skills: dict[str, list[str]] = field(default_factory=dict)
     decl: dict[str, DeclResult] = field(default_factory=dict)
     hits: list[Hit] = field(default_factory=list)
+
+_FILE_SOURCES = ("settings", "agents")      # 这两个是文件,其余是目录
+
+def preflight(dev: DeviceProfile) -> None:
+    """写任何东西之前,把 device.toml 里**配了的**源全部验一遍:密钥硬闸 + 必须存在。
+
+    为什么要单独走一遍(每条流水线里已经各自查过了):流水线是**边验边写**的。
+    等 collect_memory 写完 49 条记忆、collect_skills 才发现 skills 路径不存在,
+    金库就停在一个"写了一半"的状态上——而 run_all 是整个提取器唯一的写入序列,
+    它不该有中途暴毙的姿势。先验后写:要么全做,要么什么都没做。
+    """
+    for tool, src in dev.sources.items():
+        for d in src.memory:
+            check_source(Path(d))
+            require_source(d, f"[sources.{tool}] memory 里的一项")
+        for key in ("skills", "plugin_repos"):
+            v = getattr(src, key)
+            if v:
+                check_source(Path(v))
+                require_source(v, f"[sources.{tool}] {key}")
+        for key in _FILE_SOURCES:
+            v = getattr(src, key)
+            if v:
+                check_source(Path(v))
+                require_source(v, f"[sources.{tool}] {key}", kind="file")
 
 def plan_deletions(vault_root: Path, dev: DeviceProfile) -> list[str]:
     """这次 collect 会从金库删掉哪些记忆。给 CLI 拿去问人。"""
@@ -42,8 +68,8 @@ def run_all(vault_root: Path, dev: DeviceProfile, w: Writer) -> CollectReport:
         if cl.agents:
             p = Path(cl.agents)
             check_source(p)                 # 硬闸:agents(CLAUDE.md)源文件
-            if p.is_file():
-                w.write_text(home / "claude" / p.name, p.read_text(encoding="utf-8"))
+            require_source(p, "[sources.claude] agents", kind="file")
+            w.write_text(home / "claude" / p.name, p.read_text(encoding="utf-8"))
 
     cx = dev.sources.get("codex")
     if cx:
@@ -54,8 +80,8 @@ def run_all(vault_root: Path, dev: DeviceProfile, w: Writer) -> CollectReport:
         if cx.agents:
             p = Path(cx.agents)
             check_source(p)                 # 硬闸:agents(AGENTS.md)源文件
-            if p.is_file():
-                w.write_text(home / "codex" / p.name, p.read_text(encoding="utf-8"))
+            require_source(p, "[sources.codex] agents", kind="file")
+            w.write_text(home / "codex" / p.name, p.read_text(encoding="utf-8"))
 
     if not w.dry_run and home.is_dir():
         rep.hits = scan_tree(home)      # 软提醒：扫刚落进金库的东西
