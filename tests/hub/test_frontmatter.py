@@ -180,6 +180,80 @@ def test_quoted_block_list_items_are_unquoted():
     meta, _ = parse_frontmatter(text)
     assert meta["metadata"]["scope"] == ["tool:claude", "device:work"]
 
+# ---- 未识别的键必须原样活下来:备份区的立身之本是"别丢" ----------------------
+#
+# 最终评审 finding 4:dump_memory 只写 Memory 模型认得的 7 个字段。用户真实数据里
+# 49/49 条记忆的 metadata 都带 originSessionId 和 node_type —— 进金库之后**全没了**。
+# curating-memory skill 靠 originSessionId 把一条记忆追回它出生的那次会话;
+# 从金库还原之后,那条线索对每一条记忆都断了。备份不忠实,就不叫备份。
+
+_REAL_SHAPE = """---
+name: feedback_x
+description: "摘要"
+metadata:
+  node_type: memory
+  type: feedback
+  originSessionId: 4d30b5e2-0af1-4dce-910e-8508bff7122a
+---
+正文
+"""
+
+def test_unknown_metadata_keys_survive_load(tmp_path):
+    p = tmp_path / "x.md"
+    p.write_text(_REAL_SHAPE, encoding="utf-8")
+    m = load_memory(p)
+    assert m.extra_metadata == {"node_type": "memory",
+                                "originSessionId": "4d30b5e2-0af1-4dce-910e-8508bff7122a"}
+
+def test_unknown_metadata_keys_survive_dump(tmp_path):
+    """真正的证据:load → dump 之后,那两个键还在文本里。"""
+    p = tmp_path / "x.md"
+    p.write_text(_REAL_SHAPE, encoding="utf-8")
+    out = dump_memory(load_memory(p))
+    assert "originSessionId: 4d30b5e2-0af1-4dce-910e-8508bff7122a" in out
+    assert "node_type: memory" in out
+
+def test_unknown_top_level_keys_survive_round_trip(tmp_path):
+    p = tmp_path / "x.md"
+    p.write_text("---\nname: x\ncreated: 2026-07-01\ndescription: d\ntags: [a, b]\n"
+                 "metadata:\n  type: project\n  scope: [global]\n---\n正文\n",
+                 encoding="utf-8")
+    m = load_memory(p)
+    assert m.extra == {"created": "2026-07-01", "tags": ["a", "b"]}
+    meta2, _ = parse_frontmatter(dump_memory(m))
+    assert meta2["created"] == "2026-07-01" and meta2["tags"] == ["a", "b"]
+
+def test_round_trip_drops_no_key(tmp_path):
+    """把"一个键都不许掉"直接写成断言:load → dump → 再 load,两次的键集合必须相等。"""
+    p = tmp_path / "x.md"
+    p.write_text(_REAL_SHAPE, encoding="utf-8")
+    before, _ = parse_frontmatter(p.read_text(encoding="utf-8"))
+    after, _ = parse_frontmatter(dump_memory(load_memory(p)))
+    assert set(before) <= set(after)
+    assert set(before["metadata"]) <= set(after["metadata"])
+    for k in before["metadata"]:
+        assert after["metadata"][k] == before["metadata"][k]
+
+def test_known_keys_keep_canonical_form(tmp_path):
+    """未知键搭车,不能把已知的 7 个字段挤走或改形。"""
+    p = tmp_path / "x.md"
+    p.write_text(_REAL_SHAPE, encoding="utf-8")
+    out = dump_memory(load_memory(p))
+    assert "name: feedback_x" in out
+    assert "  type: feedback" in out
+    assert "  scope: [global]" in out          # 缺省值照常补上
+    assert "  portable: true" in out
+    assert "  sensitive: false" in out
+
+def test_dump_is_idempotent(tmp_path):
+    """dump(load(dump(load(x)))) == dump(load(x)) —— 否则每次 collect 都在制造无谓的 git diff。"""
+    p = tmp_path / "x.md"
+    p.write_text(_REAL_SHAPE, encoding="utf-8")
+    once = dump_memory(load_memory(p))
+    p2 = tmp_path / "y.md"
+    p2.write_text(once, encoding="utf-8")
+    assert dump_memory(load_memory(p2)) == once
+
 def test_quoted_name_yields_a_legal_filename(tmp_path):
     """name: "my-note" 过去会得到带引号的 name,拿去当文件名在 NTFS 上非法。"""
     p = tmp_path / "q.md"
