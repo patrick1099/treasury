@@ -72,3 +72,96 @@ def test_force_overwrites_an_existing_vault(tmp_path):
     scaffold(tmp_path, "box1", Writer(), force=True)
 
     assert "<占位" in dev.read_text(encoding="utf-8") or "<金库路径>" in dev.read_text(encoding="utf-8")
+
+
+# ---- 多设备:往已有金库里加一台新机,不该被逼着用 --force --------------------
+
+def _snapshot(root: Path) -> dict[str, bytes]:
+    return {p.relative_to(root).as_posix(): p.read_bytes()
+            for p in sorted(root.rglob("*")) if p.is_file()}
+
+def test_adding_a_second_device_needs_no_force(tmp_path):
+    """真实的多设备流程:clone 一个已有金库,再给本机 scaffold 一份 device.toml。
+    这不是"往陌生目录里乱倒",也没有覆盖任何人的配置——不该要 --force。"""
+    scaffold(tmp_path, "box1", Writer())
+    # box1 已经用起来了:填好的 device.toml、手工整理的豁免名单、共享区的记忆
+    dev1 = tmp_path / "box1" / "device.toml"
+    dev1.write_text("class = [\"work\"]\n[paths]\nVAULT = \"D:/已经填好的\"\n", encoding="utf-8")
+    exempt = tmp_path / "lint-exempt.txt"
+    exempt.write_text("# 我手工整理的\nreference_dev_toolchain_local\n", encoding="utf-8")
+    mem = tmp_path / "shared" / "memory" / "m.md"
+    mem.write_text("---\nname: m\n---\n正文\n", encoding="utf-8")
+    before = _snapshot(tmp_path)
+
+    scaffold(tmp_path, "box2", Writer())          # 新机加入,不带 --force
+
+    assert (tmp_path / "box2" / "device.toml").is_file()
+    after = _snapshot(tmp_path)
+    # 别人的东西、用户手工维护的东西,一个字节都不许动
+    for key in ("box1/device.toml", "lint-exempt.txt", "shared/memory/m.md"):
+        assert after[key] == before[key], key
+    for key in before:
+        if key != "SCHEMA.md":                    # SCHEMA.md 是派生物,本来就该重写
+            assert after[key] == before[key], key
+
+def test_re_scaffolding_the_same_host_still_refuses(tmp_path):
+    """原来的数据丢失 bug:重跑同一台机,把手填的源路径静默换回占位符。照旧拒绝。"""
+    scaffold(tmp_path, "box1", Writer())
+    dev = tmp_path / "box1" / "device.toml"
+    dev.write_text("class = [\"real\"]\n[paths]\nVAULT = \"D:/已经填好的\"\n", encoding="utf-8")
+    before = dev.read_bytes()
+
+    with pytest.raises(VaultNotEmptyError) as e:
+        scaffold(tmp_path, "box1", Writer())
+
+    assert "box1" in str(e.value) and "device.toml" in str(e.value)
+    assert dev.read_bytes() == before
+
+def test_non_empty_non_vault_dir_still_refuses(tmp_path):
+    """目标非空、又不是金库(没有 vault.toml)——别往陌生目录里乱倒。"""
+    (tmp_path / "别人的文件.txt").write_text("x", encoding="utf-8")
+
+    with pytest.raises(VaultNotEmptyError) as e:
+        scaffold(tmp_path, "box1", Writer())
+
+    assert "vault.toml" in str(e.value)
+
+def test_a_bare_git_init_dir_is_treated_as_empty(tmp_path):
+    """`git init && scaffold` 不该被 .git 这一个条目逼进 --force。"""
+    (tmp_path / ".git").mkdir()
+
+    scaffold(tmp_path, "box1", Writer())          # 不带 --force
+
+    assert (tmp_path / "vault.toml").is_file()
+
+def test_force_does_not_wipe_the_curated_lint_exempt(tmp_path):
+    """lint-exempt.txt 是用户手工整理的。--force 也不许把它清回空模板——
+    清了之后下一次 hub sync 会在那些原本豁免的记忆上跪掉。"""
+    scaffold(tmp_path, "box1", Writer())
+    exempt = tmp_path / "lint-exempt.txt"
+    exempt.write_text("# 我手工整理的\nreference_dev_toolchain_local\n", encoding="utf-8")
+    before = exempt.read_bytes()
+
+    scaffold(tmp_path, "box1", Writer(), force=True)
+
+    assert exempt.read_bytes() == before
+
+def test_force_does_not_downgrade_vault_toml(tmp_path):
+    """vault.toml 是金库的格式版本标记,建库那台机写的。别的机器再跑 scaffold
+    不许把它写回 version = 1——那是撒谎式降级。"""
+    scaffold(tmp_path, "box1", Writer())
+    cfg = tmp_path / "vault.toml"
+    cfg.write_text("version = 2\n", encoding="utf-8")
+
+    scaffold(tmp_path, "box2", Writer(), force=True)
+
+    assert cfg.read_text(encoding="utf-8") == "version = 2\n"
+
+def test_schema_md_is_always_rewritten(tmp_path):
+    """SCHEMA.md 是从代码派生的契约文本,每次都该重写成当前版本。"""
+    scaffold(tmp_path, "box1", Writer())
+    (tmp_path / "SCHEMA.md").write_text("过时的内容\n", encoding="utf-8")
+
+    scaffold(tmp_path, "box2", Writer())
+
+    assert "金库 SCHEMA" in (tmp_path / "SCHEMA.md").read_text(encoding="utf-8")
