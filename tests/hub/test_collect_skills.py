@@ -48,11 +48,16 @@ def test_missing_source_is_not_an_error(tmp_path):
 
 def test_dry_run_writes_nothing(tmp_path):
     src = tmp_path / "skills"
-    _skill(src, "alpha")
+    _skill(src, "alpha", body="# new from src\n")
     dest = tmp_path / "vault" / "skills"
+    stale_path = _skill(dest, "beta", body="# stale existing content\n") / "SKILL.md"
+    stale_bytes_before = stale_path.read_bytes()               # 预置真实残留，防空判断
     got = collect_skills(src, dest, Writer(dry_run=True))
-    assert got == ["alpha"]
-    assert not dest.exists()
+    assert got == ["alpha"]                                    # 报告说"会"收
+    # dest 里已有的内容必须逐字节原样保留
+    assert stale_path.read_bytes() == stale_bytes_before
+    # src 的内容一个字节都不该落进 dest
+    assert not (dest / "alpha").exists()
 
 def test_loose_files_at_skills_root_are_ignored(tmp_path):
     src = tmp_path / "skills"
