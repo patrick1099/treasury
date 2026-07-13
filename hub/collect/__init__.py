@@ -69,7 +69,7 @@ def run_all(vault_root: Path, dev: DeviceProfile, w: Writer) -> CollectReport:
             p = Path(cl.agents)
             check_source(p)                 # 硬闸:agents(CLAUDE.md)源文件
             require_source(p, "[sources.claude] agents", kind="file")
-            w.write_text(home / "claude" / p.name, p.read_text(encoding="utf-8"))
+            w.copy_file(p, home / "claude" / p.name)    # copy_file 自己也过一遍闸
 
     cx = dev.sources.get("codex")
     if cx:
@@ -81,7 +81,7 @@ def run_all(vault_root: Path, dev: DeviceProfile, w: Writer) -> CollectReport:
             p = Path(cx.agents)
             check_source(p)                 # 硬闸:agents(AGENTS.md)源文件
             require_source(p, "[sources.codex] agents", kind="file")
-            w.write_text(home / "codex" / p.name, p.read_text(encoding="utf-8"))
+            w.copy_file(p, home / "codex" / p.name)     # copy_file 自己也过一遍闸
 
     if not w.dry_run and home.is_dir():
         rep.hits = scan_tree(home)      # 软提醒：扫刚落进金库的东西

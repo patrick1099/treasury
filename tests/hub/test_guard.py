@@ -1,6 +1,7 @@
 import pytest
 from pathlib import Path
-from hub.guard import check_source, is_denied, has_denied_component, SecretPathError
+from hub.guard import (check_source, is_denied, has_denied_component,
+                       read_source_text, SecretPathError)
 
 
 def test_secrets_dir_is_denied():
@@ -114,3 +115,20 @@ def test_has_denied_component_does_not_resolve_or_touch_cwd(tmp_path, monkeypatc
     monkeypatch.chdir(secrets_dir)
     assert not has_denied_component(Path("oss.md"))
     assert is_denied(Path("oss.md"))          # 对照:is_denied 的 resolve 半部分确实命中
+
+
+# ---- 带硬闸的读原语(最终评审 finding 6) ----------------------------------
+
+def test_read_source_text_reads_normal_file(tmp_path):
+    p = tmp_path / "settings.json"
+    p.write_text('{"a": 1}', encoding="utf-8")
+    assert read_source_text(p) == '{"a": 1}'
+
+def test_read_source_text_refuses_denied_path(tmp_path):
+    """`check_source(x)` 然后 `x.read_text()` 这个惯用法散落在 decl.py 里两处,
+    忘掉前半句就直接把密钥读进下游。读原语把闸焊在里面 —— 直接调它,证明它自己会拒。"""
+    p = tmp_path / "secrets" / "settings.json"
+    p.parent.mkdir(parents=True)
+    p.write_text("token=super-secret", encoding="utf-8")
+    with pytest.raises(SecretPathError):
+        read_source_text(p)

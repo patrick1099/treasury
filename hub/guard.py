@@ -65,3 +65,19 @@ def check_source(path: Path) -> None:
         raise SecretPathError(
             f"硬闸:拒绝读取 {path} —— 命中密钥黑名单 {sorted(DENIED_NAMES)}。"
             f"私密内容留在 ~/.claude/secrets/,记忆/skill 里只写指针。")
+
+
+def read_source_text(path: Path) -> str:
+    """带硬闸的**读**原语:先过闸,再读。
+
+    提取器里有两处只读不拷的源(settings.json / config.toml —— 读出来解析成声明,
+    文件本身不进金库),它们套不进 Writer.copy_file(那是"读+写"),但**读**的那一半
+    风险一模一样:`check_source(x)` 然后 `x.read_text()` 这个惯用法一旦哪次忘了前半句,
+    密钥就直接进了下游。
+
+    所以给"读"也留一个原语:凡是读本机源文件,走这里,闸就没法忘。
+    (调用方已有的 check_source 留着不动 —— 纵深防御,理由同 Writer.copy_file。)
+    """
+    p = Path(path)
+    check_source(p)
+    return p.read_text(encoding="utf-8")
