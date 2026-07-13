@@ -47,6 +47,26 @@ def test_schema_md_documents_the_contract(tmp_path):
                   ]:
         assert token in s, token
 
+def test_schema_md_does_not_repeat_the_false_claims(tmp_path):
+    """SCHEMA.md 里的每句话都是 C 阶段唯一的信息来源,**假话比缺话更糟**。
+    这几条曾经是假的,别让它们漂回来。"""
+    scaffold(tmp_path, "box1", Writer())
+    s = (tmp_path / "SCHEMA.md").read_text(encoding="utf-8")
+
+    # §11.2:非 git 的插件仓是**整个跳过**,不是"退化成整棵目录拷贝"(那只对 skill 成立)
+    assert "整个跳过" in s
+    assert "git init" in s               # …后果:手写的非 git 插件根本没进备份
+    # §9:被铲的是 plugins/<仓名>/,不是整个 plugins/;且快照只增不减
+    assert "只增不减" in s
+    # §5/§1:刚建的金库里没有 MEMORY.md
+    assert "不存在 = 空" in s
+    # §2:引号剥一层、行内注释不剥、布尔必须是真布尔
+    assert "剥一层配对的外层引号" in s
+    assert "行内注释**不剥**" in s
+    assert "必须是**真布尔**" in s
+    # §8:codex 的 plugins.toml 永远没有 [repos.*]
+    assert "永远没有** `[repos.*]`" in s
+
 def test_dry_run_creates_nothing(tmp_path):
     scaffold(tmp_path, "box1", Writer(dry_run=True))
     # 断言到"一个条目都没有"这一层：只查 vault.toml 的话，scaffold 里偷摸加一句
