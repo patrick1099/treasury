@@ -122,7 +122,10 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
     return meta, body
 
 def load_memory(path: Path) -> Memory:
-    meta, body = parse_frontmatter(path.read_text(encoding="utf-8"))
+    try:
+        meta, body = parse_frontmatter(path.read_text(encoding="utf-8"))
+    except (FrontmatterError, UnicodeDecodeError) as e:
+        raise FrontmatterError(f"{path}: {e}") from e
     md = meta.get("metadata", {})
     return Memory(
         name=meta.get("name", path.stem),
