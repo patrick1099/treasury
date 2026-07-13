@@ -9,6 +9,8 @@ import shutil
 import tarfile
 from pathlib import Path
 
+from hub.guard import is_denied
+
 class Writer:
     def __init__(self, dry_run: bool = False):
         self.dry_run = dry_run
@@ -53,13 +55,22 @@ class Writer:
         """派生目录的全量重写:先清空 dest,再整棵拷过去。
 
         不做增量——派生目录的真源永远在别处,金库这份改了也白改。
+
+        硬闸挡在这一层:树里任何一层命中 hub.guard.is_denied 的条目(secrets/、
+        auth.json、.env,以及指向它们的符号链接/junction)一律跳过、不拷贝,
+        同级的其余条目照常拷贝——不是整棵树报错中止。每个调用方(collect_skills、
+        以后的 Task 9 等)都自动继承这层保护,不用各自记得挡。
         """
         self.rmtree(dest)
         if self.dry_run:
             print(f"  [dry-run] 拷贝 {src} → {dest}")
             self.written.append(Path(dest))
             return
-        shutil.copytree(src, dest)
+
+        def _ignore(dirpath: str, names: list[str]) -> set[str]:
+            return {name for name in names if is_denied(Path(dirpath) / name)}
+
+        shutil.copytree(src, dest, ignore=_ignore)
         self.written.append(Path(dest))
 
     def extract_tar(self, dest: Path, tar_bytes: bytes) -> None:
