@@ -5,7 +5,8 @@ from hub.derive import render_memory_index
 from hub.scope import lint_scope
 from hub.links import lint_raw_paths, load_lint_exempt
 from hub.backend import GitBackend, ConflictError
-from hub.collect import collect_memories
+from hub.collect.memory import collect_memory
+from hub.writer import Writer
 
 def _lint(vault, exempt: set[str]) -> list[str]:
     errs = []
@@ -27,8 +28,8 @@ def _cmd_collect(args) -> int:
     dev = load_device(vault_root, host)
     src = dev.sources.get("claude")
     sources = [Path(s) for s in (src.memory if src else [])]
-    collected = collect_memories(sources, vault_root, host)
-    print(f"collected {len(collected)} memories: {collected}")
+    r = collect_memory(sources, vault_root, host, Writer())
+    print(f"记忆: 写 {len(r.written)} 删 {len(r.deleted)}")
     return 0
 
 def _cmd_sync(args) -> int:
