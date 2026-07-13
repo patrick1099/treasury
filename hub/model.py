@@ -45,12 +45,6 @@ class DeviceProfile:
     paths: dict[str, str]
     sources: dict[str, ToolSources] = field(default_factory=dict)   # "claude" / "codex"
 
-@dataclass(frozen=True)
-class Target:
-    device_classes: frozenset[str]
-    project: str | None
-    tool: str
-
 @dataclass
 class VaultConfig:
     version: int

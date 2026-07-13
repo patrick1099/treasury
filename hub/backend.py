@@ -9,7 +9,7 @@ class Backend(ABC):
     @abstractmethod
     def acquire(self) -> None: ...
     @abstractmethod
-    def publish(self, message: str, push: bool = True) -> None: ...
+    def publish(self, message: str) -> None: ...
     @abstractmethod
     def status(self) -> str: ...
 
@@ -39,11 +39,17 @@ class GitBackend(Backend):
                 raise ConflictError("git merge 冲突，需手工解决:\n" + "\n".join(conflicted))
             raise ConflictError(f"git pull 失败:\n{r.stderr or r.stdout}")
 
-    def publish(self, message: str, push: bool = True) -> None:
+    def publish(self, message: str) -> None:
+        """提交,有 remote 就推。
+
+        (曾经有个 push=False 开关,给已经删掉的 `hub process`(只本地提交、不推)用。
+        现在唯一的调用方是 `hub sync`,它的语义就是"推上去";没有 remote 时 _has_remote()
+        自己会跳过 push,离线照样能用。没有第二种调用方式了,开关跟着走。)
+        """
         self._run("add", "-A")
         if self._run("status", "--porcelain").stdout.strip():
             self._run("commit", "-m", message)
-        if push and self._has_remote():
+        if self._has_remote():
             r = self._run("push", check=False)
             if r.returncode != 0:
                 raise ConflictError(f"git push 失败:\n{r.stderr or r.stdout}")

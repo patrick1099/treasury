@@ -1,4 +1,4 @@
-from hub.model import Memory, Target, DeviceProfile, ToolSources, VaultConfig, Vault, SHARED
+from hub.model import Memory, DeviceProfile, ToolSources, VaultConfig, Vault, SHARED
 
 def test_memory_defaults():
     m = Memory(name="x", description="d", type="project",
@@ -6,6 +6,7 @@ def test_memory_defaults():
     assert m.path is None
     assert m.origin is None
     assert m.scope == ["global"]
+    assert m.extra == {} and m.extra_metadata == {}   # 未识别键的默认是空,不是 None
 
 def test_tool_sources_missing_fields_mean_not_installed():
     ts = ToolSources()
@@ -22,7 +23,6 @@ def test_device_profile_sources_split_by_tool():
     assert dp.sources["claude"].skills == "C:/x/.claude/skills"
     assert "codex" not in dp.sources
     assert VaultConfig(version=1).version == 1
-    assert Target(frozenset({"work"}), "xinao", "claude").tool == "claude"
 
 def test_device_profile_sources_default_empty():
     dp = DeviceProfile(host="h", classes=[], projects=[], paths={})
