@@ -9,13 +9,32 @@ import shutil
 import tarfile
 from pathlib import Path
 
-from hub.guard import has_denied_component, is_denied
+from hub.guard import check_source, has_denied_component, is_denied
 
 class Writer:
     def __init__(self, dry_run: bool = False):
         self.dry_run = dry_run
         self.written: list[Path] = []
         self.removed: list[Path] = []
+
+    def copy_file(self, src: Path, dest: Path) -> None:
+        """把**单个源文件**拷进金库。硬闸(check_source)长在这里面。
+
+        为什么非有这个原语不可:`write_text()` 收到的是**已经读出来的文本**,它永远
+        看不见源路径,所以硬闸没法长在它里面 —— 调用方只能自己记得先 check_source()。
+        "闸设在调用点、不设在原语里"这个形状,本项目已经因此出过**四次**事故;
+        最近一次的复现只需要一行:把 collect/__init__.py 里那句 check_source(p) 删掉,
+        一个 secrets/CLAUDE.md 就原样泄进金库。
+
+        跟 snapshot_repo() 一样,调用方那道 check_source **留着不动**(纵深防御:
+        它拦得更早、报错更能说清是流水线里哪个条目被拒)。这里是最后一道:
+        万一未来某个新调用方忘了挡,失败方向是"什么都不写",不是"照真的写"。
+
+        闸拦的是**读**,所以它在 --dry-run 下同样生效(dry-run 的闸在 write_text 里面)。
+        """
+        src = Path(src)
+        check_source(src)
+        self.write_text(dest, src.read_text(encoding="utf-8"))
 
     def write_text(self, path: Path, text: str) -> None:
         path = Path(path)

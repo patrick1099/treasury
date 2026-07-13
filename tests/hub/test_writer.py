@@ -3,6 +3,7 @@ import subprocess
 import tarfile
 from pathlib import Path
 import pytest
+from hub.guard import SecretPathError
 from hub.writer import Writer
 
 def _make_tar_bytes() -> bytes:
@@ -170,6 +171,63 @@ def test_copy_tree_does_not_leak_through_symlink_to_secrets(tmp_path):
     assert (dest / "sibling.txt").read_text(encoding="utf-8") == "normal"
     leaked = dest / "creds" / "token.md"
     assert not leaked.exists()
+
+# ---- copy_file:带硬闸的读+写原语(最终评审 finding 6) ----------------------
+#
+# 过去 Writer 只有 write_text(),它拿到的是**已经读出来的文本**,永远看不见源路径,
+# 于是硬闸没法长在原语里。调用方只能自己记得先 check_source() —— 而"闸设在调用点、
+# 不设在原语里"这个形状,本项目已经因此出过四次事故。评审又证了一次:把
+# collect/__init__.py 里那一行 check_source(p) 删掉,一个 secrets/CLAUDE.md 就
+# 一行代码泄进金库。
+#
+# 下面这两个测试**直接调 Writer.copy_file**,不经过任何流水线 —— 这正是重点:
+# 就算未来某个新调用方忘了挡,原语自己也会拒绝。
+
+def test_copy_file_refuses_denied_source_and_writes_nothing(tmp_path):
+    src = tmp_path / "secrets" / "CLAUDE.md"
+    src.parent.mkdir(parents=True)
+    src.write_text("token=super-secret", encoding="utf-8")
+    dest = tmp_path / "vault" / "CLAUDE.md"
+
+    w = Writer()
+    with pytest.raises(SecretPathError):
+        w.copy_file(src, dest)
+
+    assert not dest.exists()
+    assert w.written == []                     # 连"打算写"都没记上
+
+def test_copy_file_refuses_denied_source_even_in_dry_run(tmp_path):
+    """硬闸在 dry-run 下也是闸:它拦的是**读**,不是写。"""
+    src = tmp_path / "secrets" / "CLAUDE.md"
+    src.parent.mkdir(parents=True)
+    src.write_text("token=super-secret", encoding="utf-8")
+    with pytest.raises(SecretPathError):
+        Writer(dry_run=True).copy_file(src, tmp_path / "v" / "CLAUDE.md")
+
+def test_copy_file_copies_content(tmp_path):
+    src = tmp_path / "home" / "CLAUDE.md"
+    src.parent.mkdir(parents=True)
+    src.write_text("我的全局约定\n", encoding="utf-8")
+    dest = tmp_path / "vault" / "CLAUDE.md"
+    w = Writer()
+    w.copy_file(src, dest)
+    assert dest.read_text(encoding="utf-8") == "我的全局约定\n"
+    assert w.written == [dest]
+
+def test_dry_run_copy_file_writes_nothing(tmp_path):
+    src = tmp_path / "home" / "CLAUDE.md"
+    src.parent.mkdir(parents=True)
+    src.write_text("新内容\n", encoding="utf-8")
+    dest = tmp_path / "vault" / "CLAUDE.md"
+    dest.parent.mkdir(parents=True)
+    dest.write_text("旧的真实内容\n", encoding="utf-8")
+    before = dest.read_bytes()
+
+    w = Writer(dry_run=True)
+    w.copy_file(src, dest)
+
+    assert dest.read_bytes() == before         # 一个字节都没动
+    assert w.written == [dest]                 # 但报告说它"会"写
 
 def test_extract_tar_writes_real_files(tmp_path):
     """真实运行:extract_tar() 把 tar 里的内容真的解到 dest,并记进 written。"""

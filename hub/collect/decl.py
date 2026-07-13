@@ -14,7 +14,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from hub.collect.errors import require_source
-from hub.guard import check_source
+from hub.guard import check_source, read_source_text
 from hub.snapshot import RepoMeta, is_git_repo, snapshot_repo
 from hub.tomlout import dump_toml
 from hub.writer import Writer
@@ -89,7 +89,7 @@ def collect_claude_decl(plugin_repos: Path | None, settings: Path | None,
         settings = Path(settings)
         check_source(settings)
         require_source(settings, "[sources.claude] settings", kind="file")
-        raw = json.loads(settings.read_text(encoding="utf-8"))
+        raw = json.loads(read_source_text(settings))    # 读原语自己也过一遍闸
         r.enabled = dict(raw.get("enabledPlugins", {}))
         for name, spec in (raw.get("extraKnownMarketplaces") or {}).items():
             s = (spec or {}).get("source", {})
@@ -107,7 +107,7 @@ def collect_codex_decl(config: Path | None, dest_dir: Path, w: Writer) -> DeclRe
     config = Path(config)
     check_source(config)
     require_source(config, "[sources.codex] settings", kind="file")
-    raw = tomllib.loads(config.read_text(encoding="utf-8"))
+    raw = tomllib.loads(read_source_text(config))       # 读原语自己也过一遍闸
     for name, spec in (raw.get("plugins") or {}).items():
         r.enabled[name] = bool(spec.get("enabled", False))
     for name, spec in (raw.get("marketplaces") or {}).items():
