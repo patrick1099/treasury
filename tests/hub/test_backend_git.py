@@ -62,27 +62,24 @@ def test_acquire_merges_nonconflicting_changes(tmp_path):
     GitBackend(clone).acquire()             # 不应抛
     assert (clone / "a.md").exists() and (clone / "b.md").exists()
 
-def test_publish_push_false_commits_without_pushing(tmp_path):
-    # process 场景：push=False 时只本地提交，远端 HEAD 不应变化（离线优先）
-    remote = tmp_path / "remote"; _init_repo(remote)
-    clone = tmp_path / "clone"
-    subprocess.run(["git", "clone", "-q", str(remote), str(clone)], check=True,
-                   capture_output=True, text=True)
-    _git(clone, "config", "user.email", "t@t"); _git(clone, "config", "user.name", "t")
-    remote_head_before = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=remote, check=True,
+def test_publish_without_remote_commits_locally(tmp_path):
+    """没有 remote 的金库(离线/纯本地)照样能 publish:只本地提交,不试图 push。
+
+    (原来这里测的是 publish(push=False) —— 那个开关的唯一调用方是已经删掉的
+    `hub process`。开关跟着删了,但"没有 remote 也能干活"这条离线优先的性质
+    还在,而且现在由 _has_remote() 单独扛,所以照测不误。)
+    """
+    repo = tmp_path / "solo"
+    _init_repo(repo)
+    head_before = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True,
         capture_output=True, text=True).stdout.strip()
-    clone_head_before = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=clone, check=True,
+
+    (repo / "local.md").write_text("local only\n", encoding="utf-8")
+    GitBackend(repo).publish("local only")            # 不该抛(没有 remote 可推)
+
+    head_after = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True,
         capture_output=True, text=True).stdout.strip()
-    (clone / "local.md").write_text("local only\n", encoding="utf-8")
-    GitBackend(clone).publish("local only", push=False)
-    clone_head_after = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=clone, check=True,
-        capture_output=True, text=True).stdout.strip()
-    remote_head_after = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=remote, check=True,
-        capture_output=True, text=True).stdout.strip()
-    assert clone_head_after != clone_head_before      # 本地提交了
-    assert GitBackend(clone).status().strip() == ""   # 工作区干净
-    assert remote_head_after == remote_head_before    # 远端未被 push
+    assert head_after != head_before                  # 本地提交了
+    assert GitBackend(repo).status().strip() == ""    # 工作区干净
