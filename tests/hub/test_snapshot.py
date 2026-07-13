@@ -1,5 +1,7 @@
 import subprocess
+import pytest
 from pathlib import Path
+from hub.guard import SecretPathError
 from hub.snapshot import snapshot_repo, repo_meta, is_git_repo
 from hub.writer import Writer
 
@@ -20,6 +22,26 @@ def _mk_repo(tmp_path: Path) -> Path:
     _git(repo, "commit", "-qm", "init")
     _git(repo, "remote", "add", "origin", "https://github.com/x/myplugin.git")
     return repo
+
+def test_snapshot_repo_hard_gate_blocks_denied_path(tmp_path):
+    """snapshot_repo 自身必须是硬闸——不靠调用方记得挡。
+
+    直接调用 snapshot_repo,绕开 decl.py/skills.py 两条流水线里的 check_source
+    call-site 闸,证明原语本身对密钥路径也会拒绝(防第五次同类事故:未来某个
+    新调用方忘了在调用前挡)。repo 路径本身命中 DENIED_NAMES(secrets)。
+    """
+    repo = tmp_path / "secrets"
+    repo.mkdir()
+    (repo / "token.md").write_text("sekret", encoding="utf-8")
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "t@t")
+    _git(repo, "config", "user.name", "t")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "init")
+    dest = tmp_path / "vault" / "secrets"
+    with pytest.raises(SecretPathError):
+        snapshot_repo(repo, dest, Writer())
+    assert not dest.exists()               # 硬闸挡在写之前——没有任何字节落地
 
 def test_snapshot_excludes_git_and_ignored(tmp_path):
     repo = _mk_repo(tmp_path)

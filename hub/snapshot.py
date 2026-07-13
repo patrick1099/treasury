@@ -10,6 +10,7 @@ git archive 只打包 git 跟踪的文件,两个问题一起解决。
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from hub.guard import check_source
 from hub.writer import Writer
 
 @dataclass
@@ -38,8 +39,16 @@ def repo_meta(repo: Path) -> RepoMeta:
     return RepoMeta(name=repo.name, remote=remote, sha=sha, dirty=dirty)
 
 def snapshot_repo(repo: Path, dest: Path, w: Writer) -> RepoMeta:
-    """把 repo 的 HEAD 快照全量重写到 dest。返回仓库元数据。"""
+    """把 repo 的 HEAD 快照全量重写到 dest。返回仓库元数据。
+
+    check_source(repo) 是原语自带的硬闸,不是调用方(decl.py/skills.py)那道
+    call-site 闸的替代——那道闸留着不动,它拦得更早、报错更好(能说清楚是
+    流水线里哪个条目被拒)。这里是纵深防御:万一未来某个新调用方忘了先挡
+    (本项目已经因为"闸设在调用点而不是原语里"同类事故发生过四次),原语
+    自己也会拒绝往下走,失败方向是"什么都不写",不是"照真的写"。
+    """
     repo, dest = Path(repo), Path(dest)
+    check_source(repo)
     meta = repo_meta(repo)
     tar = _git(repo, "archive", "--format=tar", "HEAD", binary=True).stdout
     w.extract_tar(dest, tar)
