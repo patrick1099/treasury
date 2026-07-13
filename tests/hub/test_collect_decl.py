@@ -117,6 +117,65 @@ def test_configured_but_missing_codex_config_refuses(tmp_path):
     with pytest.raises(MissingSourceError, match="nope.toml"):
         collect_codex_decl(tmp_path / "nope.toml", tmp_path / "v", Writer())
 
+# ---- 最终评审 finding 2:一个用户级 hook 曾经让 collect 永久性地半途暴毙 ----
+
+# Claude 的 settings.json 里 hooks 的真实形状:dict of lists of dicts。
+_HOOKS = {
+    "PreCompact": [
+        {"matcher": "*", "hooks": [{"type": "command", "command": "py -3 x.py"}]},
+    ],
+}
+
+def test_hooks_degrade_instead_of_killing_the_whole_manifest(tmp_path):
+    """一个用户级 hook 曾经让 `hub collect` **抛错**,而清单是最后写的 ——
+    金库停在"记忆/skill/插件快照都落了、plugins.toml 和 MEMORY.md 没落"的半成品上,
+    而且**之后每一次 collect 都同样炸**,备份从此冻结。
+
+    dump_toml 对没见过的形状抛错是**对的**(宁可响不可错,SCHEMA §8),问题是**炸的范围**:
+    一个备份区的 TOML 写出器缺一张表,不该把整份备份带走。
+    [hooks] 这一张表跳过 + 大声警告,清单的其余部分照写。
+    """
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({**_SETTINGS, "hooks": _HOOKS}), encoding="utf-8")
+    dest = tmp_path / "vault" / "claude"
+
+    r = collect_claude_decl(None, settings, dest, Writer())     # 不许抛
+
+    man = tomllib.loads((dest / "plugins.toml").read_text(encoding="utf-8"))
+    assert "hooks" not in man                                   # 那张表跳过了
+    assert man["enabled"]["superpowers@claude-plugins-official"] is True   # 清单其余部分照写
+    assert man["marketplaces"]["xu-local"] == "directory:C:\\x\\plugins-dev"
+    assert r.hooks == _HOOKS                                    # 报告里仍然如实带着
+
+def test_skipped_hooks_are_reported_loudly(tmp_path, capsys):
+    """静默跳过 = 用户以为 hook 备份了,其实没有。必须点名跳了什么、为什么。"""
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({**_SETTINGS, "hooks": _HOOKS}), encoding="utf-8")
+    collect_claude_decl(None, settings, tmp_path / "v" / "claude", Writer())
+    out = capsys.readouterr().out
+    assert "hooks" in out and "PreCompact" in out       # 跳了哪张表、里面是什么
+
+def test_scalar_hooks_still_get_written(tmp_path):
+    """降级只针对写不出来的形状。真能写的 hooks(纯标量)必须照常进清单——
+    别把"跳过 hooks"做成无条件的。"""
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({**_SETTINGS, "hooks": {"onStop": "py -3 x.py"}}),
+                        encoding="utf-8")
+    dest = tmp_path / "vault" / "claude"
+    collect_claude_decl(None, settings, dest, Writer())
+    man = tomllib.loads((dest / "plugins.toml").read_text(encoding="utf-8"))
+    assert man["hooks"]["onStop"] == "py -3 x.py"
+
+def test_bad_value_outside_hooks_still_raises(tmp_path):
+    """降级**只**给 hooks 开口子。别的键出现没见过的形状,照旧抛错——
+    dump_toml 那道"宁可响不可错"不能被这次修改顺手拆掉。"""
+    settings = tmp_path / "settings.json"
+    settings.write_text(
+        json.dumps({"enabledPlugins": {"x@m": {"nested": "不该出现的形状"}}}),
+        encoding="utf-8")
+    with pytest.raises(ValueError, match="x@m"):
+        collect_claude_decl(None, settings, tmp_path / "v", Writer())
+
 def test_dry_run_writes_nothing(tmp_path):
     devdir = tmp_path / "plugins-dev"
     _mk_repo(devdir, "cjt")
