@@ -2,7 +2,9 @@ import json
 import subprocess
 import tomllib
 from pathlib import Path
+import pytest
 from hub.collect.decl import collect_claude_decl, collect_codex_decl
+from hub.guard import SecretPathError
 from hub.writer import Writer
 
 def _mk_repo(root: Path, name: str) -> Path:
@@ -104,3 +106,33 @@ def test_dry_run_writes_nothing(tmp_path):
     dest = tmp_path / "vault" / "claude"
     collect_claude_decl(devdir, settings, dest, Writer(dry_run=True))
     assert not dest.exists()
+
+def test_plugin_repo_literally_named_secrets_is_rejected(tmp_path):
+    devdir = tmp_path / "plugins-dev"
+    _mk_repo(devdir, "cjt")              # 字母序排在 secrets 前面，先被处理 —— 正常仓的对照组
+    _mk_repo(devdir, "secrets")          # 硬闸目标：目录名字面命中黑名单
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps(_SETTINGS), encoding="utf-8")
+    dest = tmp_path / "vault" / "claude"
+    with pytest.raises(SecretPathError):
+        collect_claude_decl(devdir, settings, dest, Writer())
+    assert (dest / "plugins" / "cjt" / "plugin.md").exists()      # 正的一半：正常仓仍照常落地
+    assert not (dest / "plugins" / "secrets").exists()            # 硬闸拦住，没有进金库
+
+def test_plugin_repo_via_junction_into_secrets_is_rejected(tmp_path):
+    devdir = tmp_path / "plugins-dev"
+    secrets_root = tmp_path / "secrets"
+    secrets_root.mkdir()
+    real_repo = _mk_repo(secrets_root, "myplugin")   # 真身是 secrets/ 下的一个 git 仓
+    devdir.mkdir(parents=True, exist_ok=True)
+    link = devdir / "myplugin"                       # 名字本身无辜
+    result = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(real_repo)],
+                            capture_output=True)
+    if result.returncode != 0:
+        pytest.skip(f"无法创建 NTFS junction，跳过（可能非 Windows 或权限不足）: {result.stderr!r}")
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps(_SETTINGS), encoding="utf-8")
+    dest = tmp_path / "vault" / "claude"
+    with pytest.raises(SecretPathError):
+        collect_claude_decl(devdir, settings, dest, Writer())
+    assert not (dest / "plugins" / "myplugin").exists()
