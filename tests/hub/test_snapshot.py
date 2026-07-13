@@ -64,6 +64,14 @@ def test_dry_run_snapshots_nothing(tmp_path):
     snapshot_repo(repo, dest, Writer(dry_run=True))
     assert not dest.exists()
 
+def test_snapshot_records_dest_in_written(tmp_path):
+    """真实(非 dry-run)快照必须让 dest 出现在 w.written —— 下游报告/清单靠它才知道备份了什么。"""
+    repo = _mk_repo(tmp_path)
+    dest = tmp_path / "vault" / "myplugin"
+    w = Writer()
+    snapshot_repo(repo, dest, w)
+    assert dest in w.written
+
 def test_is_git_repo(tmp_path):
     repo = _mk_repo(tmp_path)
     assert is_git_repo(repo)

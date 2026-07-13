@@ -1,5 +1,16 @@
+import io
+import tarfile
 from pathlib import Path
 from hub.writer import Writer
+
+def _make_tar_bytes() -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        data = b"print(1)\n"
+        info = tarfile.TarInfo(name="src/a.py")
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
 
 def test_write_text_creates_parents(tmp_path):
     w = Writer()
@@ -80,3 +91,25 @@ def test_dry_run_copy_tree_changes_nothing(tmp_path):
     assert not (dest / "sub").exists()         # 源的内容一个字节都没过来
     assert not (dest / "sub" / "new.txt").exists()
     assert w.written == [dest]                 # 但报告说它"会"写
+
+def test_extract_tar_writes_real_files(tmp_path):
+    """真实运行:extract_tar() 把 tar 里的内容真的解到 dest,并记进 written。"""
+    dest = tmp_path / "d"
+    w = Writer()
+    w.extract_tar(dest, _make_tar_bytes())
+    assert (dest / "src" / "a.py").read_text(encoding="utf-8") == "print(1)\n"
+    assert w.written == [dest]
+
+def test_dry_run_extract_tar_changes_nothing(tmp_path):
+    """dry-run extract_tar() 留 dest 原样不动(预置残留内容,防空判断)。"""
+    dest = tmp_path / "d"
+    dest.mkdir()
+    (dest / "stale.txt").write_text("stale", encoding="utf-8")   # 上一轮的残留
+
+    w = Writer(dry_run=True)
+    w.extract_tar(dest, _make_tar_bytes())
+
+    assert (dest / "stale.txt").exists()
+    assert (dest / "stale.txt").read_text(encoding="utf-8") == "stale"
+    assert not (dest / "src").exists()          # tar 的内容一个字节都没落盘
+    assert w.written == [dest]                  # 但报告说它"会"写

@@ -7,9 +7,7 @@
 
 git archive 只打包 git 跟踪的文件,两个问题一起解决。
 """
-import io
 import subprocess
-import tarfile
 from dataclasses import dataclass
 from pathlib import Path
 from hub.writer import Writer
@@ -43,13 +41,6 @@ def snapshot_repo(repo: Path, dest: Path, w: Writer) -> RepoMeta:
     """把 repo 的 HEAD 快照全量重写到 dest。返回仓库元数据。"""
     repo, dest = Path(repo), Path(dest)
     meta = repo_meta(repo)
-    w.rmtree(dest)
-    if w.dry_run:
-        print(f"  [dry-run] 快照 {repo} → {dest}  (sha {meta.sha[:8]}"
-              f"{', 有未提交改动' if meta.dirty else ''})")
-        return meta
-    dest.mkdir(parents=True, exist_ok=True)
     tar = _git(repo, "archive", "--format=tar", "HEAD", binary=True).stdout
-    with tarfile.open(fileobj=io.BytesIO(tar)) as tf:
-        tf.extractall(dest, filter="data")
+    w.extract_tar(dest, tar)
     return meta
