@@ -1,4 +1,5 @@
 import argparse
+import sys
 from pathlib import Path
 from hub.vault import load_vault, load_device, current_host
 from hub.derive import render_memory_index
@@ -88,7 +89,8 @@ def _cmd_bootstrap(args) -> int:
             dest = Path(home) / "skills" / d.name
             w.copy_tree(d, dest)
             installed.append(f"{tool}:{d.name}")
-    print(f"已装 {len(installed)} 把加载器 skill: {installed}")
+    verb = "预计会装" if args.dry_run else "已装"
+    print(f"{verb} {len(installed)} 把加载器 skill: {installed}")
     print("接下来在各工具里跑那把 skill，它会自己去金库取记忆。")
     return 0
 
@@ -132,10 +134,25 @@ def build_parser() -> argparse.ArgumentParser:
         sp.set_defaults(func=fn)
     return p
 
+def _make_console_output_tolerant() -> None:
+    """本机 py -3 -c "print(sys.stdout.encoding)" 报 gbk,而 gbk 编不出 ⚠(U+26A0)——
+    secrets-scan/脏仓警告一旦真的命中,print() 就会以 UnicodeEncodeError 崩溃,
+    唯一该报警的时刻反而看着像随机 Python bug。这里只把 errors 换成 replace(
+    编不出就退化成 ?),不动 encoding——强改 encoding="utf-8" 会让 gbk 控制台上
+    其余中文输出变乱码,那是比崩溃更隐蔽的坏。捕获测试用的替身 stdout 之类不支持
+    reconfigure() 的场景一律跳过,不当作错误。"""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(errors="replace")
+            except (ValueError, OSError):
+                pass
+
 def main(argv: list[str]) -> int:
+    _make_console_output_tolerant()
     args = build_parser().parse_args(argv)
     return args.func(args)
 
 if __name__ == "__main__":
-    import sys
     raise SystemExit(main(sys.argv[1:]))

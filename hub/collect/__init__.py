@@ -7,6 +7,7 @@ from pathlib import Path
 from hub.collect.decl import DeclResult, collect_claude_decl, collect_codex_decl
 from hub.collect.memory import MemoryResult, collect_memory, plan_memory
 from hub.collect.skills import collect_skills
+from hub.guard import check_source
 from hub.model import DeviceProfile
 from hub.secrets_scan import Hit, scan_tree
 from hub.writer import Writer
@@ -40,6 +41,7 @@ def run_all(vault_root: Path, dev: DeviceProfile, w: Writer) -> CollectReport:
             home / "claude", w)
         if cl.agents:
             p = Path(cl.agents)
+            check_source(p)                 # 硬闸:agents(CLAUDE.md)源文件
             if p.is_file():
                 w.write_text(home / "claude" / p.name, p.read_text(encoding="utf-8"))
 
@@ -51,6 +53,7 @@ def run_all(vault_root: Path, dev: DeviceProfile, w: Writer) -> CollectReport:
             Path(cx.settings) if cx.settings else None, home / "codex", w)
         if cx.agents:
             p = Path(cx.agents)
+            check_source(p)                 # 硬闸:agents(AGENTS.md)源文件
             if p.is_file():
                 w.write_text(home / "codex" / p.name, p.read_text(encoding="utf-8"))
 
