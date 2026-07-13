@@ -4,13 +4,34 @@ from hub.model import Memory
 class FrontmatterError(ValueError):
     pass
 
+def _unquote(s: str) -> str:
+    """剥掉**一层配对的**外层引号。只认首尾同一个引号字符、且长度 ≥ 2 的情况。
+
+    为什么必须剥:用户真实的记忆里有 21/47 条 `description:` 是 Claude 自己
+    加了双引号写的。不剥,引号就原样进 MEMORY.md 索引;`name: "x"` 更会去写一个
+    文件名带引号的文件(NTFS 上非法),`scope: ["global"]` 会被判成非法 scope。
+
+    为什么只剥配对的外层:`别把设计重心压在'我认为重要的风险'上` 这种**内层**
+    引号必须原样活下来。首尾不是同一个引号字符 → 一个字都不动。
+
+    这里**不**做 YAML 注释剥离:`description: a # b` 里的 ` # b` 是值的一部分,
+    照剥会静默毁掉任何正当含 " # " 的摘要。
+    """
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ("\"", "'"):
+        return s[1:-1]
+    return s
+
 def _coerce(v: str):
     s = v.strip()
     if s.startswith("[") and s.endswith("]"):
         inner = s[1:-1].strip()
         if not inner:
             return []
-        return [x.strip() for x in inner.split(",")]
+        return [_unquote(x.strip()) for x in inner.split(",")]
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ("\"", "'"):
+        # 带引号的标量一律是**字符串**(标准 YAML 也这么读):`sensitive: "false"`
+        # 是字符串 "false",不是布尔 false。真布尔由 _require_bool 把关,炸得响。
+        return _unquote(s)
     low = s.lower()
     if low in ("true", "false"):
         return low == "true"
@@ -33,7 +54,7 @@ def _parse_block_list(lines: list[str], i: int, indent: int) -> tuple[list, int]
         stripped = ln.strip()
         if not stripped.startswith("- "):
             break
-        items.append(stripped[2:].strip())
+        items.append(_unquote(stripped[2:].strip()))
         i += 1
     return items, i
 
@@ -121,6 +142,26 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
         body += "\n"
     return meta, body
 
+def _require_bool(md: dict, key: str, default: bool, path: Path) -> bool:
+    """`portable` / `sensitive` 必须是**真布尔**,不是"能 bool() 出个值的东西"。
+
+    宁可响,不可错。旧写法 `bool(md.get("sensitive", False))` 把任何非空字符串
+    都当 True:`sensitive: false  # 不入库` 解析成字符串 'false  # 不入库',
+    bool() 判 True,collect 就把这条**本意 false** 的记忆当敏感内容静默跳过——
+    这条记忆从此不在任何一次备份里,而且哪儿都不报错。标志位是**反的**。
+
+    键缺失 = 用默认值,那是正常的;键**写了但不是布尔**才是错。
+    """
+    if key not in md:
+        return default
+    v = md[key]
+    if isinstance(v, bool):
+        return v
+    raise FrontmatterError(
+        f"{path}: metadata.{key} 必须是布尔字面量 true / false(不加引号、不带行内注释),"
+        f"实际拿到 {type(v).__name__}: {v!r}。"
+        f"注意本解析器**不剥行内注释**——`{key}: false  # 说明` 整串都是值。")
+
 def load_memory(path: Path) -> Memory:
     try:
         meta, body = parse_frontmatter(path.read_text(encoding="utf-8"))
@@ -132,8 +173,8 @@ def load_memory(path: Path) -> Memory:
         description=meta.get("description", ""),
         type=md.get("type", "reference"),
         scope=md.get("scope", ["global"]),
-        portable=bool(md.get("portable", True)),
-        sensitive=bool(md.get("sensitive", False)),
+        portable=_require_bool(md, "portable", True, path),
+        sensitive=_require_bool(md, "sensitive", False, path),
         body=body,
         path=path,
     )
