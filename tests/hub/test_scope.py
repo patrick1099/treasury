@@ -1,25 +1,19 @@
 import pytest
-from hub.scope import parse_scope, scope_matches, lint_scope, ScopeError
-from hub.model import Target
+from hub.scope import parse_scope, lint_scope, ScopeError
 
-def T(classes=(), project=None, tool="claude"):
-    return Target(frozenset(classes), project, tool)
-
-def test_global_matches_everything():
-    assert scope_matches(["global"], T(tool="codex")) is True
+# 提取器对 scope 只做**校验**(hub sync 的 lint),不做匹配 —— 匹配是加载器(项目 C)
+# 的判断题,见 SCHEMA §2。scope_matches() 是落地层的遗物,已随落地层一起删掉,
+# 所以这里也不再测"哪条记忆命中哪台机"。
 
 def test_same_dim_is_or():
     assert parse_scope(["device:work", "device:home"]) == {"device": {"work", "home"}}
-    assert scope_matches(["device:work", "device:home"], T(classes=["home"])) is True
-    assert scope_matches(["device:work", "device:home"], T(classes=["lab"])) is False
 
 def test_cross_dim_is_and():
-    s = ["project:xinao", "tool:claude"]
-    assert scope_matches(s, T(project="xinao", tool="claude")) is True
-    assert scope_matches(s, T(project="xinao", tool="codex")) is False  # Claude 专属不漏给 Codex
+    assert parse_scope(["project:xinao", "tool:claude"]) == {
+        "project": {"xinao"}, "tool": {"claude"}}
 
-def test_absent_dim_unrestricted():
-    assert scope_matches(["tool:claude"], T(project="anything", tool="claude")) is True
+def test_global_alone_yields_no_dims():
+    assert parse_scope(["global"]) == {}
 
 def test_global_must_be_alone():
     with pytest.raises(ScopeError):
@@ -29,3 +23,7 @@ def test_global_must_be_alone():
 
 def test_unknown_dimension_rejected():
     assert lint_scope(["weird:x"]) != []
+
+def test_malformed_predicate_rejected():
+    assert lint_scope(["device:"]) != []      # 有维度没值
+    assert lint_scope(["device"]) != []       # 根本没有冒号

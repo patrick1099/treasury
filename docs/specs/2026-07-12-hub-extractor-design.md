@@ -225,7 +225,11 @@ Python 这边只剩**格式校验**(`scope.py` 的 `lint_scope`):同维度 OR、
 - `vault.py` → 读新的两区结构
 
 **原样保留**(它们没错,不该连坐)
-- `backend.py`(git)、`frontmatter.py`、`links.py`、`scope.py`、`model.py`、`derive.py`、`managed_block.py`
+- `backend.py`(git)、`links.py`、`scope.py`
+
+> 更正(执行期发现的起草疏漏):本节初稿把 `managed_block.py`、`frontmatter.py`、`model.py`、`derive.py` 也列进了"原样保留",与本 spec 其它章节矛盾。实际:
+> - `managed_block.py` **删** —— 它唯一的消费者是 `materialize`。往 `AGENTS.md`/`CLAUDE.md` 写托管块这件事,新架构下归各工具的 skill(项目 C),而 skill 不是 Python,拿不走这个模块。留着就是没有调用方的死代码。
+> - `frontmatter.py`、`model.py`、`derive.py` **改** —— 分别见 §9(坏 frontmatter 必须报错而非静默跳过)与两区结构的读写改造。
 
 ## 9. 测试
 
