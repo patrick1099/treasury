@@ -1,0 +1,65 @@
+"""C 的注册器：把金库共享源活链进各工具地盘（link-only，非破坏）。
+
+Plan 1 只做 skill。逐个 skill 建目录 junction，改一处三家实时生效。
+写盘前完整只读预检：**发现任何冲突就零写入**（一个字节都不写），绝不删用户的东西。
+预检通过后逐个建链——**这一步不是原子的**：若第 N 个建链遇系统错误，前 N-1 个已建、
+不回滚。但 link-only 且幂等，重跑 register 会把剩下的补齐，不留脏拷贝。
+建链走 Writer（dry-run 闸，见 fslink）。register 本身**从不删任何路径**。
+"""
+import os
+from pathlib import Path
+from hub.model import SHARED, DeviceProfile
+from hub.writer import Writer
+
+class RegisterConflict(RuntimeError):
+    pass
+
+def _agents_home(dev: DeviceProfile) -> Path:
+    v = dev.paths.get("AGENTS_HOME")
+    return Path(v) if v else Path.home() / ".agents"
+
+def skill_targets(dev: DeviceProfile) -> list[Path]:
+    """本机要建 skill 链接的 skills 目录集合。缺失的 home 跳过。"""
+    out: list[Path] = []
+    ch = dev.paths.get("CLAUDE_HOME")
+    if ch:
+        out.append(Path(ch) / "skills")          # Claude 读这里
+    out.append(_agents_home(dev) / "skills")     # Codex + opencode 读这里
+    return out
+
+def _points_at(link: Path, src: Path) -> bool:
+    """link 是否精确解析到 src。resolve 失败（坏链/环等）→ False（当作不是我们的），
+    异常一律吞成 False、不外冒。"""
+    try:
+        return link.resolve() == src.resolve()
+    except (OSError, RuntimeError):
+        return False
+
+def register_skills(vault_root: Path, dev: DeviceProfile, w: Writer) -> list[str]:
+    vault_root = Path(vault_root)
+    shared = vault_root / SHARED / "skills"
+    skills = sorted((d for d in shared.iterdir() if d.is_dir()), key=lambda p: p.name) \
+        if shared.is_dir() else []
+
+    # ── 只读预检：全过才写，任何冲突立即中止（一个字节不动）──
+    to_link: list[tuple[Path, Path]] = []   # (src, link) 待建
+    ensured: list[str] = []                 # 现在已就位（待建 + 已就位）
+    conflicts: list[str] = []
+    for target_dir in skill_targets(dev):
+        for src in skills:
+            link = target_dir / src.name
+            label = f"{target_dir}{os.sep}{src.name}"
+            if not os.path.lexists(link):
+                to_link.append((src, link)); ensured.append(label)
+            elif _points_at(link, src):
+                ensured.append(label)                       # 已就位，no-op
+            else:
+                conflicts.append(label)                     # 用户的/指别处的，不碰
+    if conflicts:
+        raise RegisterConflict(
+            "以下位置已被非 hub 管理的同名项占用，register 不覆盖、未写任何链接。"
+            "请先移开或改名：\n  " + "\n  ".join(conflicts))
+
+    for src, link in to_link:
+        w.make_dir_link(src, link)
+    return ensured
