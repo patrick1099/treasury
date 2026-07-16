@@ -323,3 +323,9 @@ def test_writer_dry_run_link_writes_nothing(tmp_path):
     w.make_dir_link(target, link)
     assert not os.path.lexists(link)                     # dry-run：没建
     assert link in w.written                             # 但报告说"会"建
+
+def test_writer_remove_dir_link_absent_is_noop(tmp_path):
+    """对不存在的链接调用 remove_dir_link：不抛、也不往 self.removed 里记账。"""
+    w = Writer()
+    w.remove_dir_link(tmp_path / "nothing")
+    assert w.removed == []
