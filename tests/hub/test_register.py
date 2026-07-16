@@ -35,8 +35,10 @@ def test_register_is_idempotent(tmp_path):
     _shared_skill(vault, "alpha")
     dev = _dev(tmp_path)
     first = register_skills(vault, dev, Writer())
-    second = register_skills(vault, dev, Writer())        # 重跑不炸、数目稳定
+    w2 = Writer()
+    second = register_skills(vault, dev, w2)        # 重跑不炸、数目稳定
     assert len(first) == len(second) == 2
+    assert w2.written == []                          # 全部早已就位，第二遍零写入
     assert (tmp_path / "home" / ".claude" / "skills" / "alpha" / "SKILL.md").exists()
 
 def test_register_empty_shared_does_nothing(tmp_path):
@@ -73,6 +75,29 @@ def test_register_conflict_link_pointing_elsewhere(tmp_path):
     make_dir_link(other, tmp_path / "home" / ".claude" / "skills" / "alpha")
     with pytest.raises(RegisterConflict, match="alpha"):
         register_skills(vault, _dev(tmp_path), Writer())
+
+def test_register_conflict_at_one_target_writes_nothing_to_other_target(tmp_path):
+    """CLAUDE_HOME 冲突时，AGENTS_HOME 那份本来是可以建的——但两趟制预检必须让它
+    也一个链接都不建，绝不能"这边冲突、那边照建"。"""
+    vault = tmp_path / "vault"
+    _shared_skill(vault, "alpha")
+    dev = _dev(tmp_path)
+
+    claude_link = tmp_path / "home" / ".claude" / "skills" / "alpha"
+    agents_link = tmp_path / "home" / ".agents" / "skills" / "alpha"
+
+    mine = claude_link
+    mine.mkdir(parents=True)
+    (mine / "SKILL.md").write_text("# 我自己的 alpha\n", encoding="utf-8")
+
+    assert not os.path.lexists(agents_link)          # 可建：还没被占
+
+    w = Writer()
+    with pytest.raises(RegisterConflict, match="alpha"):
+        register_skills(vault, dev, w)
+
+    assert w.written == []                            # 一个字节都没写
+    assert not os.path.lexists(agents_link)            # 另一个 target 也没被建链
 
 def test_skill_targets_skips_missing_home(tmp_path):
     dev = DeviceProfile(host="box1", classes=[], projects=[],
