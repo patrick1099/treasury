@@ -77,3 +77,32 @@ def test_promote_dry_run_writes_nothing(tmp_path):
     _skill(vault / "box1" / "claude" / "skills", "alpha", "# a\n")
     promote_skill(vault, "box1", "claude", "alpha", Writer(dry_run=True))
     assert not (vault / "shared" / "skills" / "alpha").exists()
+
+def test_promote_conflict_when_dest_is_link_to_identical_real_dir(tmp_path):
+    """dest 是指向共享区之外某真实目录的 junction，内容与 src 完全相同——
+    is_dir() 会跟随链接返回 True，若只看 is_dir() 会误当"真目录、内容相同"直接
+    幂等放行。但 dest 本身是链接，属于"非目录或任意链接"的异常态，必须拒绝，
+    且不写一个字节。"""
+    from hub.fslink import make_dir_link
+    vault = tmp_path / "vault"
+    _skill(vault / "box1" / "claude" / "skills", "alpha", "# a\n")
+    outside = _skill(tmp_path / "outside_identical", "alpha_target", "# a\n")
+    (vault / "shared" / "skills").mkdir(parents=True)
+    make_dir_link(outside, vault / "shared" / "skills" / "alpha")
+    w = Writer()
+    with pytest.raises(PromoteConflict):
+        promote_skill(vault, "box1", "claude", "alpha", w)
+    assert w.written == []
+
+def test_promote_conflict_when_dest_is_broken_link(tmp_path):
+    """dest 是链接但目标已被删除（坏链）——同样必须拒绝为 PromoteConflict。"""
+    from hub.fslink import make_dir_link
+    vault = tmp_path / "vault"
+    _skill(vault / "box1" / "claude" / "skills", "alpha", "# a\n")
+    outside = tmp_path / "outside_to_delete"
+    outside.mkdir()
+    (vault / "shared" / "skills").mkdir(parents=True)
+    make_dir_link(outside, vault / "shared" / "skills" / "alpha")
+    outside.rmdir()                                        # 目标消失，link 变坏链
+    with pytest.raises(PromoteConflict):
+        promote_skill(vault, "box1", "claude", "alpha", Writer())
