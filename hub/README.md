@@ -1,13 +1,18 @@
-# hub —— 把本机 AI 工具的家当收进一个 git 金库
+# hub —— 把本机 AI 工具的家当收进一个 git 金库,再活链回各工具
 
-`hub` 是**提取器**:它读本机 Claude Code / Codex 的配置与产出,**填一个 git 金库**。
+`hub` 目前有两个**边界明确**的阶段,都在这个仓库里:
 
-**它只提取,不落地。** 它**从不写任何工具的地盘**(`~/.claude`、`~/.codex`、工程根目录)——
-一个字节都不写。把金库里的东西装回工具,是**另一个项目**(加载器 skill)的事,不在这个仓库里。
+- **A 提取器(`collect` / `sync`)**:读本机 Claude Code / Codex 的配置与产出,**只**收进金库的
+  **备份区**。**绝不把内容写回工具地盘,也不写 `shared/`。**
+- **C 注册器(`promote` / `register` / `status`,C 阶段 Plan 1——只做 skill)**:由用户**显式调用**。
+  `promote` 把选定 skill 从备份区**复制**进 `shared/`;`register` 把 `shared/` 的 skill **逐个 junction**
+  链进 Claude / Codex / opencode 的 skill 目录(改一处三家实时生效)。memory 视图与 plugin 见后续计划。
 
-> 这条铁律是拿一次真实事故换来的:上一版有个"落地层",它会往真实的 `~/.claude` 里写。
-> 那一层已经**整个删掉**了。如果你在别处看到 `hub.cli process` / `hub.cli pull` /
-> `materialize.py` / `roster.py` / `managed_block.py` —— 那是过时的文档,那些东西不存在了。
+> **事故铁律(主语已收窄)**:它约束的是**自动提取流程**——`collect` / `sync` 永远不能顺手把备份
+> 落回真实工具目录。上一版有个会往 `~/.claude` 乱写的"落地层",已**整个删掉**;若在别处看到
+> `hub.cli process` / `hub.cli pull` / `materialize.py` / `roster.py` / `managed_block.py`,那是过时文档。
+> **C 阶段的写入不走自动流程**:只经用户显式调用的 `promote` / `register`,且都过独立安全闸——
+> 冲突即停、不覆盖用户内容、link-only、支持 `--dry-run`。
 
 纯标准库,Python ≥ 3.11(实测 3.14)。
 
@@ -17,11 +22,11 @@
 
 | 谁 | 是什么 | 写哪儿 |
 |---|---|---|
-| **提取器**(就是本目录) | Python,机械搬运,不做判断 | **只写 `<本机>/`**,外加金库根的派生索引 `MEMORY.md` |
-| **加载器 skill** | 另一个项目,全是判断题 | `shared/`、各工具地盘 |
+| **A 提取器** | Python,机械搬运,不做判断 | **只写 `<本机>/`** 备份区,外加金库根的派生索引 `MEMORY.md` |
+| **C 注册器** | 判断题;skill-loop(`register`/`promote`/`status`)已在本包,memory 视图 / plugin 见后续计划 | `shared/`、各工具 skill 目录(经用户显式调用 + 安全闸) |
 
-两者之间**唯一**的接口是金库根的 **`SCHEMA.md`**(由 `hub/schema_md.py` 生成)。
-加载器的作者只读那一份文件,读不到这里的任何一行代码。
+两阶段之间的接口是金库根的 **`SCHEMA.md`**(由 `hub/schema_md.py` 生成)——它定义金库长什么样。
+后续独立的加载器(memory / plugin)仍以这份契约为准。
 
 **要了解金库的格式、字段语义、硬闸行为、重写粒度——去读 `SCHEMA.md`,不要读这份 README。**
 这份 README 只讲"怎么跑这个 Python 包";`SCHEMA.md` 讲"金库是什么"。不重复,免得两边打架。
@@ -78,18 +83,21 @@ py -3 -m hub.cli sync     --vault D:/hub-vault
 |---|---|---|
 | `collect` | 读本机的源,填 `<本机>/` 备份区,重算 `MEMORY.md` | 否 |
 | `sync` | 拉取合并 → lint(scope / 裸路径 / sensitive)→ 重算索引 → 提交推送 | 是 |
-| `status` | 金库的 `git status --porcelain` | 否 |
-| `bootstrap` | 换新机时把金库里的加载器 skill 装进各工具,然后退场 | 否 |
+| `promote` | 把备份区选定 skill **复制**进 `shared/`(同名不同内容即停);`--tool <claude\|codex> --name <skill 名>` | 否 |
+| `register` | 把 `shared/skills/` 逐个**活链**进各工具(Claude `~/.claude/skills`、Codex/opencode `~/.agents/skills`);改一处三家实时生效;非破坏,冲突即停不写 | 否 |
+| `status` | 金库的 `git status --porcelain`,再附各工具的 skill 链接健康(`ok` / `missing` / `conflict`) | 否 |
+| `bootstrap` | (兼容 / 旧入口)换新机时把金库里的加载器 skill 装进各工具,然后退场 | 否 |
 | `hub-scaffold`(`python -m hub.scaffold_vault`) | 建金库 / 把一台新设备加进已有金库 | 否 |
 
-- `collect` / `bootstrap` 都支持 **`--dry-run`**(一个字节都不落盘,只打印会写什么)
-  和 **`--yes`**(不询问,直接执行,含删除)。
+- `collect` / `promote` / `register` / `bootstrap` 都支持 **`--dry-run`**(一个字节都不落盘,只打印会写什么);
+  `collect` / `bootstrap` 另有 **`--yes`**(不询问,直接执行,含删除)。
 - `scaffold` 的参数是**两个位置参数** + `--force` / `--dry-run`:
   `py -3 -m hub.scaffold_vault <金库目录> <设备名>`。
 
-**`bootstrap` 是"只写金库"这条铁律的唯一例外**,而且只写各工具的 `skills/` 目录:
-新机上还没有加载器 skill(skill 自己也在金库里),这是个鸡生蛋,bootstrap 只打破这个循环。
-剩下的(记忆怎么装、装哪些)交给 skill 自己判断。
+**会写金库以外地方的命令(都非自动、都过安全闸)**:`register`(在各工具 skill 目录建 junction)、
+`promote`(写金库 `shared/`)、以及 `bootstrap`(兼容 / 旧入口——换新机时只往各工具 `skills/` 装
+加载器 skill;skill 自己也在金库里,这是个鸡生蛋,bootstrap 只打破这个循环,剩下的交给 skill 判断)。
+A 阶段的 `collect` / `sync` **不在此列**:它们只碰 `<本机>/` 备份区。
 
 ---
 
@@ -111,11 +119,15 @@ py -3 -m hub.cli sync     --vault D:/hub-vault
 
 | 文件 | 干什么 |
 |---|---|
-| `cli.py` | 命令入口(`collect` / `sync` / `status` / `bootstrap`) |
+| `cli.py` | 命令入口(A:`collect` / `sync` / `status`;C:`promote` / `register`;`bootstrap`) |
 | `collect/` | 四条提取流水线:`memory` / `skills` / `decl`(插件声明)/ agents 文件 |
 | `writer.py` | **唯一写入口** + dry-run 闸 |
 | `guard.py` | 密钥路径硬闸(不可豁免) |
 | `secrets_scan.py` | 疑似密钥软提醒(只报告) |
+| `fslink.py` | (C)目录链接原语 junction/symlink + `is_under`;`remove_dir_link` 只删链接点、绝不误删真目录 |
+| `promote.py` | (C)备份区选定 skill → `shared/`:复制、路径边界封死、同名冲突即停 |
+| `register.py` | (C)`shared/skills/` 逐个活链进各工具 skill 目录:非破坏、写前完整只读预检、冲突零写入 |
+| `status_report.py` | (C)只读报告各工具 skill 链接健康(`ok` / `missing` / `conflict`) |
 | `frontmatter.py` | 记忆 frontmatter 的受控 YAML 子集(认不出来的键**原样带着走**) |
 | `snapshot.py` | `git archive HEAD` → 干净的目录树快照 |
 | `tomlout.py` | 极简 TOML 写出器(只认 str/bool/int,没见过的形状**抛错**) |
