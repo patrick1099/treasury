@@ -7,12 +7,7 @@ import os
 from pathlib import Path
 from hub.model import SHARED, DeviceProfile
 from hub.register import skill_targets
-
-def _points_at(link: Path, src: Path) -> bool:
-    try:
-        return link.resolve() == src.resolve()
-    except (OSError, RuntimeError):                       # 解析异常 → 落成 conflict，不外冒
-        return False
+from hub.fslink import resolves_to
 
 def link_status(vault_root: Path, dev: DeviceProfile) -> list[tuple[str, str]]:
     vault_root = Path(vault_root)
@@ -26,7 +21,7 @@ def link_status(vault_root: Path, dev: DeviceProfile) -> list[tuple[str, str]]:
             label = str(link)
             if not os.path.lexists(link):
                 rows.append(("missing", label))
-            elif _points_at(link, src):
+            elif resolves_to(link, src):
                 rows.append(("ok", label))
             else:
                 rows.append(("conflict", label))     # 指别处 / 用户真目录 / 解析失败

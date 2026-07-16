@@ -13,6 +13,7 @@ from hub.writer import Writer
 from hub.register import register_skills, RegisterConflict
 from hub.promote import promote_skill, PromoteConflict
 from hub.status_report import link_status
+from hub.fslink import LinkError
 
 def _lint(vault, exempt: set[str]) -> list[str]:
     errs = []
@@ -40,10 +41,10 @@ def _cmd_status(args) -> int:
 
 def _cmd_register(args) -> int:
     vault_root = Path(args.vault)
-    dev = load_device(vault_root, args.host or current_host())
     try:
+        dev = load_device(vault_root, args.host or current_host())
         done = register_skills(vault_root, dev, Writer(dry_run=args.dry_run))
-    except RegisterConflict as e:
+    except (RegisterConflict, FileNotFoundError, LinkError) as e:
         print(e)
         return 1
     verb = "预计就位" if args.dry_run else "已就位"
@@ -55,8 +56,8 @@ def _cmd_register(args) -> int:
 def _cmd_promote(args) -> int:
     vault_root = Path(args.vault)
     host = args.host or current_host()
-    load_device(vault_root, host)                          # 校验 host 存在
     try:
+        load_device(vault_root, host)                      # 校验 host 存在
         dest = promote_skill(vault_root, host, args.tool, args.name,
                              Writer(dry_run=args.dry_run))
     except (PromoteConflict, FileNotFoundError, ValueError) as e:

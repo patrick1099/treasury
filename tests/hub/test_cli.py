@@ -459,6 +459,21 @@ def test_cli_promote_illegal_name_returns_1(tmp_path, capsys):
     assert "../evil" in capsys.readouterr().out
     assert not (vault / "shared" / "skills" / "evil").exists()
 
+def test_cli_register_without_device_toml_returns_1(tmp_path):
+    # 本机没跑过 scaffold(没有 <host>/device.toml)时,register 需要 device.toml
+    # 才能算出 skill_targets——load_device 抛 FileNotFoundError,_cmd_register 必须
+    # 干净地 return 1(打印清楚的信息),不能让 traceback 冒出来。
+    v = _mk_backup_vault(tmp_path)
+    rc = main(["register", "--vault", str(v), "--host", "box1"])
+    assert rc == 1
+
+def test_cli_promote_without_device_toml_returns_1(tmp_path):
+    # 同款缺口:promote 里 load_device 以前在 try 之外,缺 device.toml 时会 traceback。
+    v = _mk_backup_vault(tmp_path)
+    rc = main(["promote", "--vault", str(v), "--host", "box1",
+               "--tool", "claude", "--name", "alpha"])
+    assert rc == 1
+
 def test_cli_status_without_device_toml_does_not_crash(tmp_path):
     # 本机没跑过 scaffold(即没有 <host>/device.toml)时,status 只报 git 状态、
     # 不能因为 load_device 抛 FileNotFoundError 而崩溃(旧行为的向后兼容)。

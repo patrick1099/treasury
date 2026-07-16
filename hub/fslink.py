@@ -45,3 +45,11 @@ def is_under(path: Path, ancestor: Path) -> bool:
     p = Path(path).resolve()
     a = Path(ancestor).resolve()
     return p == a or a in p.parents
+
+def resolves_to(link: Path, src: Path) -> bool:
+    """link 跟随解析后是否精确指向 src；解析失败（坏链/环等）→ False（当作不是我们的），
+    异常一律吞成 False、不外冒。"""
+    try:
+        return link.resolve() == src.resolve()
+    except (OSError, RuntimeError):
+        return False
