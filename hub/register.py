@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 from hub.model import SHARED, DeviceProfile
 from hub.writer import Writer
+from hub.fslink import resolves_to
 
 class RegisterConflict(RuntimeError):
     pass
@@ -27,14 +28,6 @@ def skill_targets(dev: DeviceProfile) -> list[Path]:
     out.append(_agents_home(dev) / "skills")     # Codex + opencode 读这里
     return out
 
-def _points_at(link: Path, src: Path) -> bool:
-    """link 是否精确解析到 src。resolve 失败（坏链/环等）→ False（当作不是我们的），
-    异常一律吞成 False、不外冒。"""
-    try:
-        return link.resolve() == src.resolve()
-    except (OSError, RuntimeError):
-        return False
-
 def register_skills(vault_root: Path, dev: DeviceProfile, w: Writer) -> list[str]:
     vault_root = Path(vault_root)
     shared = vault_root / SHARED / "skills"
@@ -51,7 +44,7 @@ def register_skills(vault_root: Path, dev: DeviceProfile, w: Writer) -> list[str
             label = f"{target_dir}{os.sep}{src.name}"
             if not os.path.lexists(link):
                 to_link.append((src, link)); ensured.append(label)
-            elif _points_at(link, src):
+            elif resolves_to(link, src):
                 ensured.append(label)                       # 已就位，no-op
             else:
                 conflicts.append(label)                     # 用户的/指别处的，不碰
