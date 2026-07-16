@@ -28,6 +28,16 @@ def _rel_files(root: Path) -> dict[str, bytes]:
 def _same_tree(a: Path, b: Path) -> bool:
     return _rel_files(a) == _rel_files(b)
 
+def _is_link_at(path: Path) -> bool:
+    """True 当且仅当 path 自身的最后一段是符号链接/Windows junction——
+    不管父目录是不是链接、也不管链接目标存不存在（坏链也算）。
+    用 realpath(path) 与 realpath(父目录)/basename 比较，把"链接性"锁在叶子上，
+    避免 vault 挂在被链接父目录下面的真实子目录被误判。"""
+    p = os.path.abspath(path)
+    parent_real = os.path.realpath(os.path.dirname(p))
+    expected = os.path.join(parent_real, os.path.basename(p))
+    return os.path.realpath(p) != expected
+
 def promote_skill(vault_root: Path, host: str, tool: str, name: str, w: Writer) -> Path:
     _single_component("host", host)
     _single_component("tool", tool)
@@ -44,9 +54,13 @@ def promote_skill(vault_root: Path, host: str, tool: str, name: str, w: Writer) 
 
     dest = vault_root / SHARED / "skills" / name
     if os.path.lexists(dest):
+        if _is_link_at(dest):
+            raise PromoteConflict(
+                f"shared/skills/{name} 是意外出现的链接（symlink/junction）——"
+                f"不管指向哪、指向是否存在，都停下来让你处理，绝不当真目录用。")
         if not dest.is_dir():
             raise PromoteConflict(
-                f"shared/skills/{name} 已被非目录（文件/坏链/异处链接）占用——停下来让你处理。")
+                f"shared/skills/{name} 已被非目录（文件/坏链）占用——停下来让你处理。")
         if _same_tree(src, dest):
             return dest                                  # 严格幂等：内容相同，一个字节都不写
         raise PromoteConflict(
