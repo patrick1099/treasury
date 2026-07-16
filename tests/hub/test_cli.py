@@ -417,6 +417,48 @@ def test_cli_promote_conflict_returns_1(tmp_path, capsys):
     assert rc == 1
     assert "alpha" in capsys.readouterr().out
 
+def test_cli_register_conflict_returns_1(tmp_path, capsys):
+    # register 的只读预检：目标位置已被"非 hub 管理"的真目录占用(用户自己的东西，
+    # 不是我们建的链接)→ RegisterConflict → _cmd_register 的 except 打印+return 1，
+    # 一个字节都不许写(既不能顶替这个位置，也不能去建 AGENTS_HOME 那条链)。
+    vault = _mini_vault(tmp_path)
+    s = vault / "shared" / "skills" / "alpha"; s.mkdir(parents=True)
+    (s / "SKILL.md").write_text("# a\n", encoding="utf-8")
+    user_dir = tmp_path / "h" / ".claude" / "skills" / "alpha"
+    user_dir.mkdir(parents=True)
+    (user_dir / "own.txt").write_text("用户自己的东西\n", encoding="utf-8")
+    rc = main(["register", "--vault", str(vault), "--host", "box1"])
+    assert rc == 1
+    assert "alpha" in capsys.readouterr().out
+    # 冲突位置原封不动：还是用户的真目录，没被换成 hub 的链接
+    assert user_dir.is_dir()
+    assert not user_dir.is_symlink()
+    assert (user_dir / "own.txt").exists()
+    # 预检是"全过才写"：AGENTS_HOME 那条本来没冲突，但因为整体校验没过关，也没建
+    assert not (tmp_path / "h" / ".agents" / "skills" / "alpha").exists()
+
+def test_cli_promote_missing_skill_returns_1(tmp_path, capsys):
+    # 备份区里根本没有这把 skill -> promote_skill 的 src.is_dir() 检查抛
+    # FileNotFoundError -> _cmd_promote 的 except (PromoteConflict, FileNotFoundError,
+    # ValueError) 兜住、打印、return 1。
+    vault = _mini_vault(tmp_path)
+    rc = main(["promote", "--vault", str(vault), "--host", "box1",
+               "--tool", "claude", "--name", "does_not_exist"])
+    assert rc == 1
+    assert "does_not_exist" in capsys.readouterr().out
+    assert not (vault / "shared" / "skills" / "does_not_exist").exists()
+
+def test_cli_promote_illegal_name_returns_1(tmp_path, capsys):
+    # --name 含路径穿越（"../evil"）-> promote_skill 的 _single_component 校验
+    # 命中"/"，抛 ValueError -> 同一个 except 元组兜住、打印、return 1。
+    # （argparse 对 --name 没做值校验，是 promote_skill 自己在动笔前把它挡下来的。）
+    vault = _mini_vault(tmp_path)
+    rc = main(["promote", "--vault", str(vault), "--host", "box1",
+               "--tool", "claude", "--name", "../evil"])
+    assert rc == 1
+    assert "../evil" in capsys.readouterr().out
+    assert not (vault / "shared" / "skills" / "evil").exists()
+
 def test_cli_status_without_device_toml_does_not_crash(tmp_path):
     # 本机没跑过 scaffold(即没有 <host>/device.toml)时,status 只报 git 状态、
     # 不能因为 load_device 抛 FileNotFoundError 而崩溃(旧行为的向后兼容)。
