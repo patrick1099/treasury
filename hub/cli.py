@@ -10,6 +10,9 @@ from hub.collect import plan_deletions, preflight, run_all
 from hub.collect.errors import MissingSourceError
 from hub.frontmatter import FrontmatterError
 from hub.writer import Writer
+from hub.register import register_skills, RegisterConflict
+from hub.promote import promote_skill, PromoteConflict
+from hub.status_report import link_status
 
 def _lint(vault, exempt: set[str]) -> list[str]:
     errs = []
@@ -22,7 +25,44 @@ def _lint(vault, exempt: set[str]) -> list[str]:
     return errs
 
 def _cmd_status(args) -> int:
-    print(GitBackend(Path(args.vault)).status(), end="")
+    vault_root = Path(args.vault)
+    print(GitBackend(vault_root).status(), end="")
+    try:
+        dev = load_device(vault_root, args.host or current_host())
+    except FileNotFoundError:
+        return 0                       # 本机没有 device.toml：只报 git 状态，不回归旧行为
+    rows = link_status(vault_root, dev)
+    if rows:
+        print("skill 链接:")
+        for state, label in rows:
+            print(f"  [{state}] {label}")
+    return 0
+
+def _cmd_register(args) -> int:
+    vault_root = Path(args.vault)
+    dev = load_device(vault_root, args.host or current_host())
+    try:
+        done = register_skills(vault_root, dev, Writer(dry_run=args.dry_run))
+    except RegisterConflict as e:
+        print(e)
+        return 1
+    verb = "预计就位" if args.dry_run else "已就位"
+    print(f"{verb} {len(done)} 个 skill 链接")
+    for d in done:
+        print("  ", d)
+    return 0
+
+def _cmd_promote(args) -> int:
+    vault_root = Path(args.vault)
+    host = args.host or current_host()
+    load_device(vault_root, host)                          # 校验 host 存在
+    try:
+        dest = promote_skill(vault_root, host, args.tool, args.name,
+                             Writer(dry_run=args.dry_run))
+    except (PromoteConflict, FileNotFoundError, ValueError) as e:
+        print(e)
+        return 1
+    print(f"{'预计提升' if args.dry_run else '已提升'} → {dest}")
     return 0
 
 def _cmd_collect(args) -> int:
@@ -158,6 +198,19 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--yes", action="store_true",
                         help="不询问，直接执行（含删除）")
         sp.set_defaults(func=fn)
+
+    reg = sub.add_parser("register", parents=[common])
+    reg.add_argument("--dry-run", action="store_true",
+                     help="只报告会建哪些链接，一个字节都不落盘")
+    reg.set_defaults(func=_cmd_register)
+
+    pro = sub.add_parser("promote", parents=[common])
+    pro.add_argument("--tool", required=True, choices=["claude", "codex"],
+                     help="备份区里哪个工具的 skill")
+    pro.add_argument("--name", required=True, help="要提升的 skill 名（单个目录名，不含路径）")
+    pro.add_argument("--dry-run", action="store_true",
+                     help="只报告会提升到哪，一个字节都不落盘")
+    pro.set_defaults(func=_cmd_promote)
     return p
 
 def _make_console_output_tolerant() -> None:

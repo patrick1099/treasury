@@ -382,3 +382,55 @@ def test_bootstrap_dry_run_message_is_not_past_tense(tmp_path):
     assert rc == 0
     assert not (claude_home / "skills" / "hub-loader").exists()   # 真没装
     assert "已装" not in out.getvalue()
+
+
+# ---- Task 6: register/promote CLI 接线 + status 并入 link_status ----
+
+def _mini_vault(tmp_path):
+    from hub.scaffold_vault import scaffold
+    from hub.writer import Writer as _W
+    scaffold(tmp_path, "box1", _W())
+    dev = tmp_path / "box1" / "device.toml"
+    dev.write_text(
+        f'class=["work"]\nprojects=[]\n[paths]\n'
+        f'CLAUDE_HOME="{(tmp_path / "h" / ".claude").as_posix()}"\n'
+        f'AGENTS_HOME="{(tmp_path / "h" / ".agents").as_posix()}"\n',
+        encoding="utf-8")
+    return tmp_path
+
+def test_cli_register_builds_links(tmp_path, capsys):
+    vault = _mini_vault(tmp_path)
+    s = vault / "shared" / "skills" / "alpha"; s.mkdir(parents=True)
+    (s / "SKILL.md").write_text("# a\n", encoding="utf-8")
+    rc = main(["register", "--vault", str(vault), "--host", "box1"])
+    assert rc == 0
+    assert (tmp_path / "h" / ".claude" / "skills" / "alpha" / "SKILL.md").exists()
+
+def test_cli_promote_conflict_returns_1(tmp_path, capsys):
+    vault = _mini_vault(tmp_path)
+    existing = vault / "shared" / "skills" / "alpha"; existing.mkdir(parents=True)
+    (existing / "SKILL.md").write_text("# 共享区版本\n", encoding="utf-8")
+    src = vault / "box1" / "claude" / "skills" / "alpha"; src.mkdir(parents=True)
+    (src / "SKILL.md").write_text("# 不同版本\n", encoding="utf-8")
+    rc = main(["promote", "--vault", str(vault), "--host", "box1",
+               "--tool", "claude", "--name", "alpha"])
+    assert rc == 1
+    assert "alpha" in capsys.readouterr().out
+
+def test_cli_status_without_device_toml_does_not_crash(tmp_path):
+    # 本机没跑过 scaffold(即没有 <host>/device.toml)时,status 只报 git 状态、
+    # 不能因为 load_device 抛 FileNotFoundError 而崩溃(旧行为的向后兼容)。
+    v = _mk_backup_vault(tmp_path)
+    rc = main(["status", "--vault", str(v), "--host", "box1"])
+    assert rc == 0
+
+def test_cli_status_appends_link_status(tmp_path, capsys):
+    vault = _mini_vault(tmp_path)
+    _init_git(vault)
+    s = vault / "shared" / "skills" / "alpha"; s.mkdir(parents=True)
+    (s / "SKILL.md").write_text("# a\n", encoding="utf-8")
+    rc = main(["status", "--vault", str(vault), "--host", "box1"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "skill 链接:" in out
+    assert "missing" in out and "alpha" in out
