@@ -2,7 +2,10 @@ import subprocess
 from pathlib import Path
 import pytest
 from hub.collect.errors import MissingSourceError
-from hub.collect.skills import collect_skills
+from hub.collect.skills import collect_skills, SkillScanError
+from hub.fslink import make_dir_link
+from hub.guard import SecretPathError
+from hub.model import SHARED
 from hub.writer import Writer
 
 def _skill(root: Path, name: str, body: str = "# skill\n"):
@@ -107,3 +110,55 @@ def test_loose_files_at_skills_root_are_ignored(tmp_path):
     (src / "README.md").write_text("说明", encoding="utf-8")
     _skill(src, "alpha")
     assert collect_skills(src, tmp_path / "v", Writer()) == ["alpha"]   # 只收目录
+
+def test_skips_skills_that_are_links_into_shared(tmp_path):
+    """register 把 shared 的 skill 链进了 ~/.claude/skills；collect 不该把它当本机产物再备份。"""
+    vault = tmp_path / "vault"
+    shared_skill = vault / SHARED / "skills" / "shared_one"
+    shared_skill.mkdir(parents=True)
+    (shared_skill / "SKILL.md").write_text("# shared\n", encoding="utf-8")
+
+    src = tmp_path / "home" / "skills"
+    _skill(src, "local_one")                                  # 本机独有：要备份
+    make_dir_link(shared_skill, src / "shared_one")          # 活链进来的：要跳过
+
+    dest = tmp_path / "vault" / "box1" / "claude" / "skills"
+    got = collect_skills(src, dest, Writer(), skip_under=vault / SHARED / "skills")
+    assert got == ["local_one"]                               # 只备份本机独有
+    assert (dest / "local_one").exists()
+    assert not (dest / "shared_one").exists()                 # 活链的没被镜像
+
+def test_skip_under_none_keeps_old_behavior(tmp_path):
+    src = tmp_path / "skills"
+    _skill(src, "alpha")
+    got = collect_skills(src, tmp_path / "v", Writer(), skip_under=None)
+    assert got == ["alpha"]
+
+def test_scan_failure_leaves_old_backup_untouched(tmp_path):
+    """分类阶段出错（这里用一个命中密钥闸的 skill 目录）时，旧备份一个字节不变——
+    证明 rmtree 发生在只读扫描全过之后，不再"先删后验"。"""
+    src = tmp_path / "skills"
+    _skill(src, "alpha")
+    (src / ".env").mkdir()                                    # check_source 会拒它 → 扫描阶段抛错
+    dest = tmp_path / "vault" / "box1" / "claude" / "skills"
+    _skill(dest, "old_backup")                               # 预置的旧备份
+    before = (dest / "old_backup" / "SKILL.md").read_bytes()
+    with pytest.raises(SecretPathError):
+        collect_skills(src, dest, Writer())
+    assert (dest / "old_backup" / "SKILL.md").read_bytes() == before   # 没被铲
+
+def test_scan_raises_on_broken_link_and_keeps_backup(tmp_path):
+    """源里有坏链（junction 指向已删目标）——不被 is_dir() 静默吞掉，而是抛
+    SkillScanError，且发生在 rmtree 之前，旧备份一个字节不变。"""
+    import shutil
+    src = tmp_path / "skills"
+    _skill(src, "alpha")
+    target = tmp_path / "gone"; target.mkdir()
+    make_dir_link(target, src / "broken")                    # src/broken → target
+    shutil.rmtree(target)                                    # 目标删掉：src/broken 成坏链
+    dest = tmp_path / "vault" / "box1" / "claude" / "skills"
+    _skill(dest, "old_backup")
+    before = (dest / "old_backup" / "SKILL.md").read_bytes()
+    with pytest.raises(SkillScanError):
+        collect_skills(src, dest, Writer())
+    assert (dest / "old_backup" / "SKILL.md").read_bytes() == before   # 没被铲

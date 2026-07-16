@@ -9,7 +9,7 @@ from hub.collect.errors import MissingSourceError, require_source
 from hub.collect.memory import MemoryResult, collect_memory, plan_memory
 from hub.collect.skills import collect_skills
 from hub.guard import check_source
-from hub.model import DeviceProfile
+from hub.model import DeviceProfile, SHARED
 from hub.secrets_scan import Hit, scan_tree
 from hub.writer import Writer
 
@@ -60,7 +60,8 @@ def run_all(vault_root: Path, dev: DeviceProfile, w: Writer) -> CollectReport:
     if cl:
         rep.memory = collect_memory([Path(s) for s in cl.memory], vault_root, dev.host, w)
         rep.skills["claude"] = collect_skills(
-            Path(cl.skills) if cl.skills else None, home / "claude" / "skills", w)
+            Path(cl.skills) if cl.skills else None, home / "claude" / "skills", w,
+            skip_under=vault_root / SHARED / "skills")
         rep.decl["claude"] = collect_claude_decl(
             Path(cl.plugin_repos) if cl.plugin_repos else None,
             Path(cl.settings) if cl.settings else None,
@@ -74,7 +75,8 @@ def run_all(vault_root: Path, dev: DeviceProfile, w: Writer) -> CollectReport:
     cx = dev.sources.get("codex")
     if cx:
         rep.skills["codex"] = collect_skills(
-            Path(cx.skills) if cx.skills else None, home / "codex" / "skills", w)
+            Path(cx.skills) if cx.skills else None, home / "codex" / "skills", w,
+            skip_under=vault_root / SHARED / "skills")
         rep.decl["codex"] = collect_codex_decl(
             Path(cx.settings) if cx.settings else None, home / "codex", w)
         if cx.agents:
