@@ -5,11 +5,13 @@
 "什么都不写"。这条是 2026-07-12 用一次真实事故换来的。
 """
 import io
+import os
 import shutil
 import tarfile
 from pathlib import Path
 
 from hub.guard import check_source, has_denied_component, is_denied
+from hub import fslink        # fslink 只依赖 stdlib，无循环导入
 
 class Writer:
     def __init__(self, dry_run: bool = False):
@@ -69,6 +71,24 @@ class Writer:
             print(f"  [dry-run] 删除 {path}")
             return
         path.unlink()
+
+    def make_dir_link(self, target: Path, link: Path) -> None:
+        link = Path(link)
+        self.written.append(link)
+        if self.dry_run:
+            print(f"  [dry-run] 建链接 {link} → {target}")
+            return
+        fslink.make_dir_link(target, link)
+
+    def remove_dir_link(self, link: Path) -> None:
+        link = Path(link)
+        if not os.path.lexists(link):
+            return
+        self.removed.append(link)
+        if self.dry_run:
+            print(f"  [dry-run] 删除链接 {link}")
+            return
+        fslink.remove_dir_link(link)
 
     def copy_tree(self, src: Path, dest: Path) -> None:
         """派生目录的全量重写:先清空 dest,再整棵拷过去。

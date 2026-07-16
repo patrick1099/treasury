@@ -1,4 +1,5 @@
 import io
+import os
 import subprocess
 import tarfile
 from pathlib import Path
@@ -301,3 +302,24 @@ def test_extract_tar_e2e_committed_secrets_excluded_from_vault(tmp_path):
     assert (dest / "README.md").read_text(encoding="utf-8") == "normal readme"
     assert not (dest / "secrets").exists()
     assert not (dest / ".env").exists()
+
+def test_writer_make_and_remove_link(tmp_path):
+    target = tmp_path / "t"; target.mkdir()
+    (target / "m.txt").write_text("hi", encoding="utf-8")
+    link = tmp_path / "l"
+    w = Writer()
+    w.make_dir_link(target, link)
+    assert (link / "m.txt").read_text(encoding="utf-8") == "hi"
+    assert link in w.written
+    w.remove_dir_link(link)
+    assert not os.path.lexists(link)
+    assert (target / "m.txt").exists()                   # 目标不受影响
+    assert link in w.removed
+
+def test_writer_dry_run_link_writes_nothing(tmp_path):
+    target = tmp_path / "t"; target.mkdir()
+    link = tmp_path / "l"
+    w = Writer(dry_run=True)
+    w.make_dir_link(target, link)
+    assert not os.path.lexists(link)                     # dry-run：没建
+    assert link in w.written                             # 但报告说"会"建
