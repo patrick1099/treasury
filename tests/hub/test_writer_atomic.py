@@ -4,8 +4,10 @@ from hub.writer import Writer
 
 def test_atomic_write_creates_file(tmp_path):
     p = tmp_path / "v" / "MEMORY.md"
-    Writer().write_text_atomic(p, "hello\n")
+    w = Writer()
+    w.write_text_atomic(p, "hello\n")
     assert p.read_text(encoding="utf-8") == "hello\n"
+    assert w.written == [p]
 
 def test_atomic_write_no_bom(tmp_path):
     p = tmp_path / "a.json"
@@ -19,8 +21,10 @@ def test_atomic_write_preserves_crlf(tmp_path):
 
 def test_dry_run_does_not_write(tmp_path):
     p = tmp_path / "a.md"
-    Writer(dry_run=True).write_text_atomic(p, "x\n")
+    w = Writer(dry_run=True)
+    w.write_text_atomic(p, "x\n")
     assert not p.exists()
+    assert w.written == [p]
 
 def test_replace_failure_leaves_original_and_no_temp(tmp_path, monkeypatch):
     p = tmp_path / "a.md"; p.write_text("original\n", encoding="utf-8")
