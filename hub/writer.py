@@ -8,6 +8,7 @@ import io
 import os
 import shutil
 import tarfile
+import tempfile
 from pathlib import Path
 
 from hub.guard import check_source, has_denied_component, is_denied
@@ -51,6 +52,35 @@ class Writer:
             # 沿用目标原有的换行风格：一律按 LF 写回会把仓库里的 CRLF 文件记成整文件重写。
             newline = "\r\n" if b"\r\n" in path.read_bytes() else "\n"
         path.write_text(text, encoding="utf-8", newline=newline)
+
+    def write_text_atomic(self, path: Path, text: str) -> None:
+        """原子写：同目录**唯一**临时文件 + flush/fsync + os.replace，绝不留半截文件。
+
+        视图 / 受管块 / 配置都走它——尤其 opencode.json 带明文密钥，截断代价高。
+        临时名用 tempfile.mkstemp 生成唯一名（**不能用固定 .hub-tmp**：两次写同一 path 或
+        上次崩溃残留会撞名互相覆盖）。**任何异常**（含编码错、fsync 失败）都在退出前清掉临时
+        文件——不能只在 OSError 分支清。承诺只到单文件：跨文件一批写不是事务，中途失败可能
+        部分完成，靠重跑收敛。
+        """
+        path = Path(path)
+        self.written.append(path)
+        if self.dry_run:
+            n = len(text.encode("utf-8"))
+            print(f"  [dry-run] 原子写 {'改写' if path.exists() else '新建'} {path}  ({n} 字节)")
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        newline = "\r\n" if (path.exists() and b"\r\n" in path.read_bytes()) else "\n"
+        fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".hub-tmp")
+        tmp = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline=newline) as f:
+                f.write(text)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)              # 原子；失败则原文件不动
+        except BaseException:                  # 编码/fsync/replace 任何失败都清 temp
+            tmp.unlink(missing_ok=True)
+            raise
 
     def rmtree(self, path: Path) -> None:
         path = Path(path)
