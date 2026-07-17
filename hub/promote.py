@@ -6,9 +6,9 @@
 """
 import os
 from pathlib import Path
-from hub.model import SHARED
 from hub.writer import Writer
 from hub.guard import check_source, is_denied
+from hub.vaultpaths import shared_skills_dir
 
 class PromoteConflict(RuntimeError):
     pass
@@ -52,7 +52,7 @@ def promote_skill(vault_root: Path, host: str, tool: str, name: str, w: Writer) 
     if not src.is_dir():
         raise FileNotFoundError(f"备份区没有这把 skill: {src}")
 
-    dest = vault_root / SHARED / "skills" / name
+    dest = shared_skills_dir(vault_root) / name        # 断言容器不逃逸
     if os.path.lexists(dest):
         if _is_link_at(dest):
             raise PromoteConflict(

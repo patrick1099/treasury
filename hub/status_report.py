@@ -5,14 +5,16 @@
 """
 import os
 from pathlib import Path
-from hub.model import SHARED, DeviceProfile
+from hub.model import DeviceProfile
 from hub.register import skill_targets
 from hub.fslink import resolves_to
+from hub.vaultpaths import shared_skills_dir, within_shared_skills
 
 def link_status(vault_root: Path, dev: DeviceProfile) -> list[tuple[str, str]]:
     vault_root = Path(vault_root)
-    shared = vault_root / SHARED / "skills"
-    shared_skills = sorted((d for d in shared.iterdir() if d.is_dir()),
+    shared = shared_skills_dir(vault_root)             # 逃逸容器→抛 SharedSkillsEscape
+    shared_skills = sorted((d for d in shared.iterdir()
+                            if d.is_dir() and within_shared_skills(d, vault_root)),
                            key=lambda p: p.name) if shared.is_dir() else []
     rows: list[tuple[str, str]] = []
     for target_dir in skill_targets(dev):
