@@ -1,29 +1,42 @@
+# tests/hub/test_scope.py（整体替换：旧用例断言 device: 合法，已作废）
 import pytest
-from hub.scope import parse_scope, lint_scope, ScopeError
+from hub.scope import parse_scope, scope_matches, ScopeError
 
-# 提取器对 scope 只做**校验**(hub sync 的 lint),不做匹配 —— 匹配是加载器(项目 C)
-# 的判断题,见 SCHEMA §2。scope_matches() 是落地层的遗物,已随落地层一起删掉,
-# 所以这里也不再测"哪条记忆命中哪台机"。
+def test_class_replaces_device():
+    dims = parse_scope(["class:work"])
+    assert dims == {"class": {"work"}}
 
-def test_same_dim_is_or():
-    assert parse_scope(["device:work", "device:home"]) == {"device": {"work", "home"}}
-
-def test_cross_dim_is_and():
-    assert parse_scope(["project:xinao", "tool:claude"]) == {
-        "project": {"xinao"}, "tool": {"claude"}}
-
-def test_global_alone_yields_no_dims():
-    assert parse_scope(["global"]) == {}
+def test_old_device_token_rejected():
+    with pytest.raises(ScopeError):
+        parse_scope(["device:work"])          # 旧语法，明确拒绝
 
 def test_global_must_be_alone():
     with pytest.raises(ScopeError):
         parse_scope(["global", "tool:claude"])
-    assert lint_scope(["global", "tool:claude"]) != []
-    assert lint_scope(["project:xinao", "tool:claude"]) == []
 
-def test_unknown_dimension_rejected():
-    assert lint_scope(["weird:x"]) != []
+def test_unknown_prefix_and_empty_rejected():
+    for bad in (["projet:xinao"], ["class:"], []):
+        with pytest.raises(ScopeError):
+            parse_scope(bad)
 
-def test_malformed_predicate_rejected():
-    assert lint_scope(["device:"]) != []      # 有维度没值
-    assert lint_scope(["device"]) != []       # 根本没有冒号
+# ---- 匹配 ----
+def _m(scope, classes, projects, tool):
+    return scope_matches(parse_scope(scope), classes, projects, tool)
+
+def test_global_matches_everything():
+    assert _m(["global"], [], [], "claude") is True
+
+def test_tool_only_matches_all_devices_that_tool():
+    assert _m(["tool:claude"], ["work"], ["x"], "claude") is True
+    assert _m(["tool:claude"], ["work"], ["x"], "codex") is False
+
+def test_class_or_project_within_device_dimension():
+    # class 与 project 同维 OR：命中任一即可
+    assert _m(["class:work", "project:xinao"], ["home"], ["xinao"], "claude") is True
+    assert _m(["class:work", "project:xinao"], ["work"], ["other"], "claude") is True
+    assert _m(["class:work", "project:xinao"], ["home"], ["other"], "claude") is False
+
+def test_device_and_tool_are_anded():
+    assert _m(["project:xinao", "tool:codex"], [], ["xinao"], "codex") is True
+    assert _m(["project:xinao", "tool:codex"], [], ["xinao"], "claude") is False
+    assert _m(["project:xinao", "tool:codex"], [], ["other"], "codex") is False

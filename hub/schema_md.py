@@ -91,8 +91,8 @@ metadata:
 |---|---|
 | 纯标量 | `name: my-note` |
 | 布尔(**小写、不加引号**) | `portable: true` / `sensitive: false` |
-| 行内列表 | `scope: [global]` / `scope: [device:work, tool:claude]` |
-| 块状列表 | `scope:` 换行,下面 `  - device:work` |
+| 行内列表 | `scope: [global]` / `scope: [class:work, tool:claude]` |
+| 块状列表 | `scope:` 换行,下面 `  - class:work` |
 | **一层**嵌套(只有 `metadata:` 用到) | 见上例 |
 
 **不准用**:锚点/别名、多行标量(`|` / `>`)、两层以上嵌套、**行内注释**。
@@ -141,17 +141,20 @@ metadata:
 
 ### scope
 
-- 同维度 **OR**,跨维度 **AND**,没写的维度**不限制**。
-- `global` **必须单独出现**,不可与维度谓词混用(混了就是非法,`hub sync` 会停)。
-- 维度只有三个:`device:<class>` / `project:<名>` / `tool:<名>`。
+- 语法只有四种谓词:`global` / `class:<名>` / `project:<名>` / `tool:<claude|codex|opencode>`。
+- `global` / `class:` / `project:` 同属**设备订阅维度**,维度内 **OR**;`tool:` 是独立维度,
+  维度内 **OR**;两维之间 **AND**;**某维度没写标签 = 该维度匹配全部**。
+- `global` **必须独占**(不与任何标签混用,混了就是非法,`hub sync` / 视图生成都会停)。
+  `[tool:claude]` 本身即"所有设备、仅 Claude",不必也不许写成 `[global, tool:claude]`。
+- `class:<名>` 对的是 `device.toml` 的 `class` 数组;`project:<名>` 对的是 `projects` 数组。
+  `project:xinao` 是**设备订阅条件**(本机 projects 含 xinao 才纳入),**不是**"仅 xinao
+  工程会话可见"——视图是**用户级全局视图**。
+- **异常即停**:未知前缀 / 空值 / 未知 tool / 空 scope → 非法;覆盖任何视图/配置前全量预检,
+  报出记忆文件名 + 非法标签,本次失败、旧产物原封不动。
+- (v2 契约:`vault.toml` version = 2。旧 `device:` 谓词已废,遇到即报错,见 §10 迁移。)
 
-`device:<class>` 里的 `<class>` 对的是 **`device.toml` 的 `class` 数组**(见 §3),
-**不是设备名**。那是你能拿到 class 的唯一地方——读不到 `device.toml`,你就判不了
-`device:` scope,多半会把它当 global 放行,于是**公司机器的记忆漏到家里的机器上**,
-而 scope 存在的全部意义就是防这个。
-
-**匹配逻辑归 skill。** "这条记忆该不该进我的脑子"是加载侧的判断题。提取器只做**格式校验**,
-自己从不按 scope 筛掉任何东西(备份区是本机现状的镜像,不做选择)。
+**匹配归 C(现在就是 hub 自己)**:视图生成按 (本机 class/projects, 目标 tool) 过滤。
+提取器 `collect` 仍**从不**按 scope 筛(备份区是本机现状的镜像),只做格式校验。
 
 ### `~/.codex/memories/` 不收
 
@@ -161,10 +164,10 @@ metadata:
 
 ## 3. `device.toml`(每台设备一份,在 `<设备名>/device.toml`)
 
-加载器**必须**读它:`class` 是判 `device:` scope 的唯一依据,`[paths]` 是符号根的符号表。
+加载器**必须**读它:`class` 是判 `class:` scope 的唯一依据,`[paths]` 是符号根的符号表。
 
 ```toml
-class = ["work"]              # 本机的类别。device:<class> 谓词对的就是这里
+class = ["work"]              # 本机的类别。class:<名> 谓词对的就是这里
 projects = []                 # 本机在做的工程编码。project:<名> 谓词对这里
 
 [paths]                       # 符号表:符号根 → 本机的真实绝对路径(见 §4)
