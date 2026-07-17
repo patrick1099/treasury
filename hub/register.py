@@ -8,9 +8,10 @@ Plan 1 只做 skill。逐个 skill 建目录 junction，改一处三家实时生
 """
 import os
 from pathlib import Path
-from hub.model import SHARED, DeviceProfile
+from hub.model import DeviceProfile
 from hub.writer import Writer
 from hub.fslink import resolves_to
+from hub.vaultpaths import shared_skills_dir, within_shared_skills, SharedSkillsEscape
 
 class RegisterConflict(RuntimeError):
     pass
@@ -30,9 +31,13 @@ def skill_targets(dev: DeviceProfile) -> list[Path]:
 
 def register_skills(vault_root: Path, dev: DeviceProfile, w: Writer) -> list[str]:
     vault_root = Path(vault_root)
-    shared = vault_root / SHARED / "skills"
+    shared = shared_skills_dir(vault_root)             # 断言容器不逃逸
     skills = sorted((d for d in shared.iterdir() if d.is_dir()), key=lambda p: p.name) \
         if shared.is_dir() else []
+    for d in skills:
+        if not within_shared_skills(d, vault_root):    # 单名也不许逃逸
+            raise SharedSkillsEscape(
+                f"shared/skills/{d.name} 经链接逃出金库，register 拒绝、零写入。")
 
     # ── 只读预检：全过才写，任何冲突立即中止（一个字节不动）──
     to_link: list[tuple[Path, Path]] = []   # (src, link) 待建

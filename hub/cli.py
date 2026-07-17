@@ -14,6 +14,7 @@ from hub.register import register_skills, RegisterConflict
 from hub.promote import promote_skill, PromoteConflict
 from hub.status_report import link_status
 from hub.fslink import LinkError
+from hub.vaultpaths import SharedSkillsEscape
 
 def _lint(vault, exempt: set[str]) -> list[str]:
     errs = []
@@ -32,7 +33,11 @@ def _cmd_status(args) -> int:
         dev = load_device(vault_root, args.host or current_host())
     except FileNotFoundError:
         return 0                       # 本机没有 device.toml：只报 git 状态，不回归旧行为
-    rows = link_status(vault_root, dev)
+    try:
+        rows = link_status(vault_root, dev)
+    except SharedSkillsEscape as e:
+        print(e)
+        return 1
     if rows:
         print("skill 链接:")
         for state, label in rows:
@@ -44,7 +49,7 @@ def _cmd_register(args) -> int:
     try:
         dev = load_device(vault_root, args.host or current_host())
         done = register_skills(vault_root, dev, Writer(dry_run=args.dry_run))
-    except (RegisterConflict, FileNotFoundError, LinkError) as e:
+    except (RegisterConflict, FileNotFoundError, LinkError, SharedSkillsEscape) as e:
         print(e)
         return 1
     verb = "预计就位" if args.dry_run else "已就位"
@@ -60,7 +65,7 @@ def _cmd_promote(args) -> int:
         load_device(vault_root, host)                      # 校验 host 存在
         dest = promote_skill(vault_root, host, args.tool, args.name,
                              Writer(dry_run=args.dry_run))
-    except (PromoteConflict, FileNotFoundError, ValueError) as e:
+    except (PromoteConflict, FileNotFoundError, ValueError, SharedSkillsEscape) as e:
         print(e)
         return 1
     print(f"{'预计提升' if args.dry_run else '已提升'} → {dest}")

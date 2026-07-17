@@ -5,6 +5,7 @@ from hub.register import register_skills, skill_targets, RegisterConflict
 from hub.model import DeviceProfile
 from hub.fslink import make_dir_link
 from hub.writer import Writer
+from hub.vaultpaths import SharedSkillsEscape
 
 def _dev(tmp_path) -> DeviceProfile:
     return DeviceProfile(
@@ -98,6 +99,18 @@ def test_register_conflict_at_one_target_writes_nothing_to_other_target(tmp_path
 
     assert w.written == []                            # 一个字节都没写
     assert not os.path.lexists(agents_link)            # 另一个 target 也没被建链
+
+def test_register_refuses_when_shared_skills_container_escapes(tmp_path):
+    vault = tmp_path / "vault"
+    outside = tmp_path / "outside"; outside.mkdir()
+    (vault / "shared").mkdir(parents=True)
+    make_dir_link(outside, vault / "shared" / "skills")
+    dev = _dev(tmp_path)
+    w = Writer()
+    with pytest.raises(SharedSkillsEscape):
+        register_skills(vault, dev, w)
+    assert w.written == []                              # 金库外一个链接都没建
+    assert not (tmp_path / "home" / ".claude" / "skills").exists()
 
 def test_skill_targets_skips_missing_home(tmp_path):
     dev = DeviceProfile(host="box1", classes=[], projects=[],

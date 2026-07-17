@@ -1,7 +1,9 @@
+import pytest
 from pathlib import Path
 from hub.status_report import link_status
 from hub.fslink import make_dir_link
 from hub.model import DeviceProfile
+from hub.vaultpaths import SharedSkillsEscape
 
 def _dev(tmp_path):
     return DeviceProfile(host="box1", classes=[], projects=[],
@@ -32,6 +34,14 @@ def test_reports_conflict_when_points_elsewhere(tmp_path):
     make_dir_link(other, tmp_path / ".claude" / "skills" / "alpha")   # 同名但指别处
     rows = link_status(vault, _dev(tmp_path))
     assert ("conflict", str(tmp_path / ".claude" / "skills" / "alpha")) in rows
+
+def test_status_raises_when_shared_skills_container_escapes(tmp_path):
+    vault = tmp_path / "vault"
+    outside = tmp_path / "outside"; outside.mkdir()
+    (vault / "shared").mkdir(parents=True)
+    make_dir_link(outside, vault / "shared" / "skills")
+    with pytest.raises(SharedSkillsEscape):
+        link_status(vault, _dev(tmp_path))
 
 def test_local_only_skill_is_not_reported(tmp_path):
     """用户自己的本地 skill（shared 里没有）——绝不能进结果（既非 conflict 也非任何状态）。"""

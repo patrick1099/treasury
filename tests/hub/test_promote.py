@@ -2,6 +2,7 @@ import pytest
 from pathlib import Path
 from hub.promote import promote_skill, PromoteConflict
 from hub.writer import Writer
+from hub.vaultpaths import SharedSkillsEscape
 
 def _skill(root: Path, name: str, body: str) -> Path:
     d = root / name
@@ -91,6 +92,20 @@ def test_promote_conflict_when_dest_is_link_to_identical_real_dir(tmp_path):
     make_dir_link(outside, vault / "shared" / "skills" / "alpha")
     w = Writer()
     with pytest.raises(PromoteConflict):
+        promote_skill(vault, "box1", "claude", "alpha", w)
+    assert w.written == []
+
+def test_promote_refuses_when_shared_skills_container_escapes(tmp_path):
+    """shared/skills 本身是指向金库外的 junction——promote 必须拒绝，且不往
+    金库外落一个字节。"""
+    from hub.fslink import make_dir_link
+    vault = tmp_path / "vault"
+    _skill(vault / "box1" / "claude" / "skills", "alpha", "# a\n")
+    outside = tmp_path / "outside_container"; outside.mkdir()
+    (vault / "shared").mkdir(parents=True)
+    make_dir_link(outside, vault / "shared" / "skills")
+    w = Writer()
+    with pytest.raises(SharedSkillsEscape):
         promote_skill(vault, "box1", "claude", "alpha", w)
     assert w.written == []
 
