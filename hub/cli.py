@@ -2,6 +2,7 @@ import argparse
 import sys
 from pathlib import Path
 from hub.vault import load_vault, load_device, current_host
+from hub.migrate import migrate_schema, SchemaMigrationError
 from hub.derive import render_memory_index
 from hub.scope import lint_scope
 from hub.links import lint_raw_paths, load_lint_exempt
@@ -166,6 +167,14 @@ def _cmd_bootstrap(args) -> int:
     print("接下来在各工具里跑那把 skill，它会自己去金库取记忆。")
     return 0
 
+def _cmd_migrate_schema(args) -> int:
+    try:
+        migrate_schema(Path(args.vault), args.to, Writer(dry_run=args.dry_run))
+    except SchemaMigrationError as e:
+        print(e); return 1
+    print(f"{'预计升到' if args.dry_run else '已升到'} version {args.to}")
+    return 0
+
 def _cmd_sync(args) -> int:
     vault_root = Path(args.vault)
     b = GitBackend(vault_root)
@@ -217,6 +226,11 @@ def build_parser() -> argparse.ArgumentParser:
     pro.add_argument("--dry-run", action="store_true",
                      help="只报告会提升到哪，一个字节都不落盘")
     pro.set_defaults(func=_cmd_promote)
+
+    mig = sub.add_parser("migrate-schema", parents=[common])
+    mig.add_argument("--to", type=int, required=True)
+    mig.add_argument("--dry-run", action="store_true")
+    mig.set_defaults(func=_cmd_migrate_schema)
     return p
 
 def _make_console_output_tolerant() -> None:
