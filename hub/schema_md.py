@@ -32,7 +32,7 @@ SCHEMA_MD = """# 金库 SCHEMA —— hub 与各工具 skill 之间的契约
 ## 1. 两个区
 
     vault/
-    ├─ vault.toml        金库格式版本(version = 1)。以后改布局靠它做迁移判断
+    ├─ vault.toml        金库格式版本(version = 2)。以后改布局靠它做迁移判断
     ├─ SCHEMA.md         就是本文件
     ├─ MEMORY.md         ✳ 全部记忆的索引(派生物,勿手改——见 §5)
     ├─ lint-exempt.txt   裸路径检查的豁免名单(见 §4)
@@ -151,7 +151,8 @@ metadata:
   工程会话可见"——视图是**用户级全局视图**。
 - **异常即停**:未知前缀 / 空值 / 未知 tool / 空 scope → 非法;覆盖任何视图/配置前全量预检,
   报出记忆文件名 + 非法标签,本次失败、旧产物原封不动。
-- (v2 契约:`vault.toml` version = 2。旧 `device:` 谓词已废,遇到即报错,见 §10 迁移。)
+- (v2 契约:`vault.toml` version = 2。旧 `device:` 谓词已废,遇到即报错;已有金库用
+  `hub migrate-schema --to 2` 升级。)
 
 **匹配归 C(现在就是 hub 自己)**:视图生成按 (本机 class/projects, 目标 tool) 过滤。
 提取器 `collect` 仍**从不**按 scope 筛(备份区是本机现状的镜像),只做格式校验。

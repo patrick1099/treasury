@@ -15,7 +15,7 @@ def test_global_must_be_alone():
         parse_scope(["global", "tool:claude"])
 
 def test_unknown_prefix_and_empty_rejected():
-    for bad in (["projet:xinao"], ["class:"], []):
+    for bad in (["projet:xinao"], ["class:"], [], ["tool:gpt"]):
         with pytest.raises(ScopeError):
             parse_scope(bad)
 
