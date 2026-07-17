@@ -43,6 +43,16 @@ def test_status_raises_when_shared_skills_container_escapes(tmp_path):
     with pytest.raises(SharedSkillsEscape):
         link_status(vault, _dev(tmp_path))
 
+def test_status_flags_linked_tool_container(tmp_path):
+    (tmp_path / "shared" / "skills" / "alpha").mkdir(parents=True)
+    elsewhere = tmp_path / "elsewhere"; elsewhere.mkdir()
+    (tmp_path / ".agents").mkdir()
+    make_dir_link(elsewhere, tmp_path / ".agents" / "skills")     # 容器整个是 junction
+    rows = link_status(tmp_path, _dev(tmp_path))
+    assert any(state == "conflict" and ".agents" in label for state, label in rows)
+    assert not any(state == "ok" and str(tmp_path / ".agents" / "skills") in label
+                   for state, label in rows)
+
 def test_local_only_skill_is_not_reported(tmp_path):
     """用户自己的本地 skill（shared 里没有）——绝不能进结果（既非 conflict 也非任何状态）。"""
     vault = tmp_path / "vault"

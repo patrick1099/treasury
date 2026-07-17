@@ -112,6 +112,25 @@ def test_register_refuses_when_shared_skills_container_escapes(tmp_path):
     assert w.written == []                              # 金库外一个链接都没建
     assert not (tmp_path / "home" / ".claude" / "skills").exists()
 
+def test_register_refuses_when_target_skills_container_is_a_link(tmp_path):
+    _shared_skill(tmp_path, "alpha")
+    # AGENTS_HOME/skills 整个是 junction（违反 issue #11314）
+    elsewhere = tmp_path / "elsewhere"; elsewhere.mkdir()
+    agents = tmp_path / "home" / ".agents"; agents.mkdir(parents=True)
+    make_dir_link(elsewhere, agents / "skills")
+    w = Writer()
+    with pytest.raises(RegisterConflict):
+        register_skills(tmp_path, _dev(tmp_path), w)
+    assert w.written == []                              # 零写入
+    assert not (tmp_path / "home" / ".claude" / "skills" / "alpha").exists()  # Claude 侧本可建也没建
+
+def test_register_creates_absent_container_as_real_dir(tmp_path):
+    _shared_skill(tmp_path, "alpha")
+    w = Writer()
+    register_skills(tmp_path, _dev(tmp_path), w)
+    assert (tmp_path / "home" / ".claude" / "skills" / "alpha").exists()
+    assert not (tmp_path / "home" / ".claude" / "skills").is_symlink()  # 容器是真目录
+
 def test_skill_targets_skips_missing_home(tmp_path):
     dev = DeviceProfile(host="box1", classes=[], projects=[],
                         paths={"CLAUDE_HOME": str(tmp_path / "c")}, sources={})

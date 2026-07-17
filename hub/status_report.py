@@ -18,6 +18,12 @@ def link_status(vault_root: Path, dev: DeviceProfile) -> list[tuple[str, str]]:
                            key=lambda p: p.name) if shared.is_dir() else []
     rows: list[tuple[str, str]] = []
     for target_dir in skill_targets(dev):
+        if os.path.lexists(target_dir):
+            real = os.path.realpath(target_dir)
+            expected = os.path.join(os.path.realpath(target_dir.parent), target_dir.name)
+            if not target_dir.is_dir() or real != expected:
+                rows.append(("conflict", f"{target_dir}（skills 容器是链接/非目录）"))
+                continue
         for src in shared_skills:
             link = target_dir / src.name
             label = str(link)
