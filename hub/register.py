@@ -44,6 +44,15 @@ def register_skills(vault_root: Path, dev: DeviceProfile, w: Writer) -> list[str
     ensured: list[str] = []                 # 现在已就位（待建 + 已就位）
     conflicts: list[str] = []
     for target_dir in skill_targets(dev):
+        if os.path.lexists(target_dir):
+            # 容器必须是真目录：symlink/junction/文件/坏链一律拒（Codex issue #11314：
+            # 整个 skills 目录是链接时不被识别）。realpath(容器)!=真身路径 → 是链接/坏链。
+            real = os.path.realpath(target_dir)
+            expected = os.path.join(os.path.realpath(target_dir.parent), target_dir.name)
+            if not target_dir.is_dir() or real != expected:
+                conflicts.append(f"{target_dir}（skills 容器必须是真目录，不能是链接/文件）")
+                continue
+        # 不存在：留给 make_dir_link 的 mkdir(parents=True) 建成真目录，放行。
         for src in skills:
             link = target_dir / src.name
             label = f"{target_dir}{os.sep}{src.name}"
