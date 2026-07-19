@@ -31,3 +31,20 @@ def test_view_file_embeds_shared_hash():
     from hub.memview import render_view_file
     out = render_view_file([_e("a", ["global"])], "claude", shared_hash="deadbeef")
     assert "<!-- shared_hash: deadbeef -->" in out
+
+def _mem(name, description="d", body="body", scope=("global",)):
+    from hub.model import Memory
+    return Memory(name=name, description=description, type="reference",
+                  scope=list(scope), portable=True, sensitive=False, body=body)
+
+def test_shared_hash_reflects_description():
+    # named-risk：description 进视图索引，只改它也必须翻转哈希（否则 status --check 误判 fresh）
+    from hub.memview import shared_hash
+    assert shared_hash([_mem("x", description="alpha")]) != \
+           shared_hash([_mem("x", description="beta")])
+
+def test_shared_hash_is_order_independent():
+    # 内部按 name 排序 → 与输入列表顺序无关，跨机/跨扫描顺序稳定
+    from hub.memview import shared_hash
+    a, b = _mem("a"), _mem("b")
+    assert shared_hash([a, b]) == shared_hash([b, a])
