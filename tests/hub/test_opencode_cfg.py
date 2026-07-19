@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import pytest
 from hub.writer import Writer
 from hub.model import DeviceProfile
 from hub.opencode_cfg import plan_instruction, commit_instruction
@@ -56,3 +57,26 @@ def test_rollback_log_written_no_key_copy(tmp_path):
     logs = list(bk.glob("opencode-*.log"))
     assert logs and "hash" in logs[0].read_text(encoding="utf-8")
     assert not list(bk.glob("*opencode.json"))           # 不复制整份密钥文件
+
+def test_null_instructions_refused_not_overwritten(tmp_path):
+    cfg = tmp_path / "opencode.json"
+    cfg.write_text(json.dumps({"instructions": None}), encoding="utf-8")  # 显式 null，不是缺失
+    plan = plan_instruction(_dev(cfg), tmp_path / "v.md")
+    assert plan.action == "refuse"
+    commit_instruction(plan, Writer(), tmp_path / "bk")
+    assert json.loads(cfg.read_text(encoding="utf-8"))["instructions"] is None  # 原值没被覆盖
+
+def test_config_write_failure_leaves_no_log(tmp_path):
+    cfg = tmp_path / "opencode.json"
+    cfg.write_text(json.dumps({"instructions": []}), encoding="utf-8")
+    bk = tmp_path / "bk"
+    plan = plan_instruction(_dev(cfg), tmp_path / "v.md")
+    assert plan.action == "add"
+
+    class FailingWriter(Writer):
+        def write_text_atomic(self, path, text):
+            raise OSError("simulated config write failure")
+
+    with pytest.raises(OSError):
+        commit_instruction(plan, FailingWriter(), bk)
+    assert list(bk.glob("opencode-*.log")) == []         # 配置没写成，日志绝不能留下
