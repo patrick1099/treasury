@@ -12,7 +12,8 @@ from hub.collect.errors import MissingSourceError
 from hub.frontmatter import FrontmatterError
 from hub.writer import Writer
 from hub.register import register_skills, RegisterConflict
-from hub.promote import promote_skill, PromoteConflict
+from hub.promote import (promote_skill, promote_memory, promote_memory_all,
+                         PromoteConflict, PromoteMemoryConflict)
 from hub.status_report import link_status
 from hub.fslink import LinkError
 from hub.vaultpaths import SharedSkillsEscape
@@ -70,6 +71,23 @@ def _cmd_promote(args) -> int:
         print(e)
         return 1
     print(f"{'预计提升' if args.dry_run else '已提升'} → {dest}")
+    return 0
+
+def _cmd_promote_memory(args) -> int:
+    if bool(args.name) == bool(args.all):
+        print("--name 与 --all 必须二选一"); return 1
+    vault_root = Path(args.vault); host = args.host or current_host()
+    w = Writer(dry_run=args.dry_run)
+    try:
+        load_device(vault_root, host)
+        if args.all:
+            done = promote_memory_all(vault_root, host, w)
+            print(f"{'预计提升' if args.dry_run else '已提升'} {len(done)} 条记忆")
+        else:
+            dest = promote_memory(vault_root, host, args.name, w)
+            print(f"{'预计提升' if args.dry_run else '已提升'} → {dest}")
+    except (PromoteMemoryConflict, FileNotFoundError, ValueError) as e:
+        print(e); return 1
     return 0
 
 def _cmd_collect(args) -> int:
@@ -226,6 +244,12 @@ def build_parser() -> argparse.ArgumentParser:
     pro.add_argument("--dry-run", action="store_true",
                      help="只报告会提升到哪，一个字节都不落盘")
     pro.set_defaults(func=_cmd_promote)
+
+    pm = sub.add_parser("promote-memory", parents=[common])
+    pm.add_argument("--name", default=None, help="要提升的记忆名（单个，不含路径/后缀）")
+    pm.add_argument("--all", action="store_true", help="批量提升本机备份区全部记忆")
+    pm.add_argument("--dry-run", action="store_true")
+    pm.set_defaults(func=_cmd_promote_memory)
 
     mig = sub.add_parser("migrate-schema", parents=[common])
     mig.add_argument("--to", type=int, required=True)
