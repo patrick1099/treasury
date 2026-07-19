@@ -17,6 +17,9 @@ from hub.promote import (promote_skill, promote_memory, promote_memory_all,
 from hub.status_report import link_status
 from hub.fslink import LinkError
 from hub.vaultpaths import SharedSkillsEscape
+from hub.hubconfig import read_config
+from hub.memread import read_memory, MemoryNotInView
+from hub.memview import ViewScopeError, SharedMemoryError
 
 def _lint(vault, exempt: set[str]) -> list[str]:
     errs = []
@@ -213,6 +216,17 @@ def _cmd_sync(args) -> int:
     b.publish("chore(hub): sync")
     return 0
 
+def _cmd_memory_read(args) -> int:
+    vault = args.vault or read_config().get("vault")
+    host = args.host or read_config().get("host") or current_host()
+    if not vault:
+        print("没有 --vault 也没有 ~/.hub/config.toml，无法定位金库"); return 1
+    try:
+        print(read_memory(Path(vault), host, args.tool, args.name), end="")
+    except (MemoryNotInView, FileNotFoundError, ViewScopeError, SharedMemoryError) as e:
+        print(e); return 1
+    return 0
+
 def _write_index(vault_root: Path, vault, w: Writer) -> None:
     w.write_text(vault_root / "MEMORY.md", render_memory_index(vault.memories, vault_root))
 
@@ -255,6 +269,13 @@ def build_parser() -> argparse.ArgumentParser:
     mig.add_argument("--to", type=int, required=True)
     mig.add_argument("--dry-run", action="store_true")
     mig.set_defaults(func=_cmd_migrate_schema)
+
+    mr = sub.add_parser("memory-read")
+    mr.add_argument("--vault", default=None)
+    mr.add_argument("--host", default=None)
+    mr.add_argument("--tool", required=True, choices=["claude", "codex", "opencode"])
+    mr.add_argument("--name", required=True)
+    mr.set_defaults(func=_cmd_memory_read)
     return p
 
 def _make_console_output_tolerant() -> None:
