@@ -2,6 +2,7 @@
 (设备, 工具) 切出各工具子集，喂给渲染器。绝不各扫各的、也绝不经 load_vault 顺带解析
 各设备未 promote 的记忆（那会被无关坏记忆炸到，且违反"只取 shared/memory 已闸门项"）。
 """
+import hashlib
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -81,3 +82,38 @@ def collect_view_entries(vault_root: Path, dev: DeviceProfile, tool: str) -> lis
     mems = load_shared_memories(vault_root)
     parsed = validate_scopes(mems)
     return entries_for_tool(mems, parsed, vault_root, dev, tool)
+
+EMPTY_VIEW_NOTE = "（当前设备/该工具无匹配共享记忆）"
+
+def shared_hash(memories: list[Memory]) -> str:
+    """全部 shared 记忆内容的短哈希——status --check 用它判视图是否陈旧。
+    必须含 description（它进视图索引，改了就该判 stale）。"""
+    h = hashlib.sha256()
+    for m in sorted(memories, key=lambda x: x.name):
+        for part in (m.name, m.description, m.body, " ".join(m.scope)):
+            h.update(part.encode("utf-8")); h.update(b"\0")
+    return h.hexdigest()[:16]
+
+def _abs_posix(p: Path) -> str:
+    return p.as_posix()
+
+def render_view_file(entries: list[MemoryViewEntry], tool: str, shared_hash: str = "") -> str:
+    """~/.hub/views/<tool>/MEMORY.md：薄索引，绝对源路径用 <...> 包（空格安全）、/ 分隔。
+    只把金库相对地址变本机绝对地址，不展开正文符号根。头部嵌 shared_hash 供新鲜度比对。"""
+    head = (f"<!-- 自动生成，勿手改：hub memory 视图（{tool}）。正文用 $hub-memory skill 按名读 -->\n"
+            f"<!-- shared_hash: {shared_hash} -->\n"
+            f"# 共享记忆索引 — {tool}\n\n")
+    if not entries:
+        return head + EMPTY_VIEW_NOTE + "\n"
+    rows = [f"- [{e.name}](<{_abs_posix(e.source)}>)\n  — {e.description}\n  — scope: `{' '.join(e.scope)}`"
+            for e in entries]
+    return head + "\n".join(rows) + "\n"
+
+def render_codex_block(entries: list[MemoryViewEntry]) -> str:
+    """Codex AGENTS.md 内联紧凑索引：仅 name/description/scope，无绝对路径。"""
+    head = "## 共享记忆索引（自动生成，勿手改）\n\n"
+    if not entries:
+        return head + EMPTY_VIEW_NOTE + "\n"
+    rows = [f"- `{e.name}` — {e.description} — scope: `{' '.join(e.scope)}`" for e in entries]
+    tail = "\n\n正文请用 `$hub-memory` skill 按名读取；不要一次性加载全部正文。\n"
+    return head + "\n".join(rows) + tail
