@@ -18,6 +18,14 @@ def test_container_junction_escape_raises(tmp_path):
     with pytest.raises(SharedSkillsEscape):
         shared_skills_dir(tmp_path)
 
+def test_container_parent_link_escape_raises(tmp_path):
+    # shared 本身是指向金库外的 junction，skills 尚不存在：旧的 lexists 守卫会放行，
+    # 无条件比对才挡得住这种父目录逃逸。
+    outside = tmp_path / "outside"; outside.mkdir()
+    make_dir_link(outside, tmp_path / "shared")   # 容器的父目录（shared）指向金库外
+    with pytest.raises(SharedSkillsEscape):
+        shared_skills_dir(tmp_path)
+
 def test_within_rejects_escaping_name(tmp_path):
     (tmp_path / "shared" / "skills").mkdir(parents=True)
     outside = tmp_path / "outside" / "alpha"; outside.mkdir(parents=True)

@@ -109,6 +109,21 @@ def test_promote_refuses_when_shared_skills_container_escapes(tmp_path):
         promote_skill(vault, "box1", "claude", "alpha", w)
     assert w.written == []
 
+def test_promote_refuses_when_shared_parent_is_link_and_skills_absent(tmp_path):
+    """shared 本身是指向金库外的 junction，shared/skills 尚不存在——这是旧 lexists 守卫
+    会放行的那个洞：container 不 lexists，检查被跳过，copy_tree 会写到金库外。无条件
+    比对修好后必须拒绝，且不往金库外落一个字节。"""
+    from hub.fslink import make_dir_link
+    vault = tmp_path / "vault"
+    _skill(vault / "box1" / "claude" / "skills", "alpha", "# a\n")
+    outside = tmp_path / "outside_shared_parent"; outside.mkdir()
+    make_dir_link(outside, vault / "shared")     # shared 自身指向金库外，skills 未建
+    w = Writer()
+    with pytest.raises(SharedSkillsEscape):
+        promote_skill(vault, "box1", "claude", "alpha", w)
+    assert w.written == []
+    assert not (outside / "skills").exists()
+
 def test_promote_conflict_when_dest_is_broken_link(tmp_path):
     """dest 是链接但目标已被删除（坏链）——同样必须拒绝为 PromoteConflict。"""
     from hub.fslink import make_dir_link

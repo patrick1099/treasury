@@ -20,12 +20,14 @@ def shared_skills_dir(vault_root: Path) -> Path:
     """
     vault_root = Path(vault_root)
     container = vault_root / SHARED / "skills"
-    if os.path.lexists(container):
-        expected = os.path.join(os.path.realpath(vault_root), SHARED, "skills")
-        if os.path.realpath(container) != expected:
-            raise SharedSkillsEscape(
-                f"shared/skills 经链接逃出金库：{container} → {os.path.realpath(container)}；"
-                f"应在 {expected} 内。停下来让你处理，绝不往金库外读写。")
+    # 无条件比对（不加 lexists 守卫）：shared/skills 尚不存在但父目录 shared 是外链时，
+    # realpath 会解析到金库外——只有无条件比对才挡得住这种父目录逃逸。与
+    # promote._shared_memory_dir / memview._shared_memory_dir 保持一致。
+    expected = os.path.join(os.path.realpath(vault_root), SHARED, "skills")
+    if os.path.realpath(container) != expected:
+        raise SharedSkillsEscape(
+            f"shared/skills 经链接逃出金库：{container} → {os.path.realpath(container)}；"
+            f"应在 {expected} 内。停下来让你处理，绝不往金库外读写。")
     return container
 
 def within_shared_skills(child: Path, vault_root: Path) -> bool:
