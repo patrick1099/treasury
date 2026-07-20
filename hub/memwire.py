@@ -37,6 +37,15 @@ def prepare_memory_views(vault_root: Path, dev):
     per_tool = {t: entries_for_tool(mems, parsed, vault_root, dev, t) for t in _TOOLS}
     writes: list[tuple[Path, str]] = []
     warnings: list[str] = []
+    if not mems:
+        # shared 空但本机备份区有记忆 → 视图只会是占位。空 shared 是合法的新机状态，
+        # 备份区也空时不吭声；只有"有记忆却忘了 promote"才提示。只 warn，不改写入/退出码。
+        backup = Path(vault_root) / dev.host / "claude" / "memory"
+        n = len(list(backup.glob("*.md"))) if backup.is_dir() else 0
+        if n:
+            warnings.append(
+                f"本机备份区有 {n} 条记忆，但 shared/memory 为空；本次生成的记忆视图将只有占位内容。"
+                f"请先用 `promote-memory --name <名称>` 审阅提升，或确认全部适合共享后使用 `promote-memory --all`。")
     for t in _TOOLS:
         writes.append((_view_path(t), render_view_file(per_tool[t], t, sh)))
     if dev.paths.get("CLAUDE_HOME"):
