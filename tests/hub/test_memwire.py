@@ -18,6 +18,13 @@ def _shared_mem(vault, name, scope):
         f"---\nname: {name}\ndescription: {name}d\nmetadata:\n  type: reference\n"
         f"  scope: {scope}\n---\n\nbody\n", encoding="utf-8")
 
+def _backup_mem(vault, host, name):
+    # 备份区 <host>/claude/memory/<name>.md（提升到 shared 之前记忆待在这里）
+    d = vault / host / "claude" / "memory"; d.mkdir(parents=True, exist_ok=True)
+    (d / f"{name}.md").write_text(
+        f"---\nname: {name}\ndescription: {name}d\nmetadata:\n  type: reference\n"
+        f"  scope: [global]\n---\n\nbody\n", encoding="utf-8")
+
 def test_wires_three_views_and_blocks(tmp_path, monkeypatch):
     monkeypatch.setenv("HUB_HOME", str(tmp_path / ".hub"))
     (tmp_path / "vault.toml").write_text("version = 2\n", encoding="utf-8")
@@ -85,6 +92,45 @@ def test_commit_partial_then_rerun_converges(tmp_path, monkeypatch):
     for t in ("claude", "codex", "opencode"):
         assert (hub_views_home() / t / "MEMORY.md").exists()
     assert "hub:begin" in (tmp_path / ".claude" / "CLAUDE.md").read_text(encoding="utf-8")
+
+def test_warns_when_shared_empty_but_backup_has_memories(tmp_path, monkeypatch):
+    # 发现①：shared/memory 空但本机备份区有记忆 → 提示先 promote，别静默给出空占位视图
+    monkeypatch.setenv("HUB_HOME", str(tmp_path / ".hub"))
+    (tmp_path / "vault.toml").write_text("version = 2\n", encoding="utf-8")
+    (tmp_path / "opencode.json").write_text("{}", encoding="utf-8")
+    _backup_mem(tmp_path, "box", "a")           # 备份区 1 条
+    _backup_mem(tmp_path, "box", "b")           # 备份区 2 条；shared 仍空
+    writes, warnings, plan = prepare_memory_views(tmp_path, _dev(tmp_path))
+    assert any("备份区有 2 条" in w and "shared/memory 为空" in w
+               and "promote-memory" in w for w in warnings)
+
+def test_no_empty_warn_when_shared_nonempty(tmp_path, monkeypatch):
+    # shared 非空 → 不该有空占位警告（即便备份区也有）
+    monkeypatch.setenv("HUB_HOME", str(tmp_path / ".hub"))
+    (tmp_path / "vault.toml").write_text("version = 2\n", encoding="utf-8")
+    (tmp_path / "opencode.json").write_text("{}", encoding="utf-8")
+    _shared_mem(tmp_path, "a", "[global]")
+    _backup_mem(tmp_path, "box", "a")
+    writes, warnings, plan = prepare_memory_views(tmp_path, _dev(tmp_path))
+    assert not any("shared/memory 为空" in w for w in warnings)
+
+def test_no_empty_warn_on_fresh_machine_backup_also_empty(tmp_path, monkeypatch):
+    # 全新机：shared 空 + 备份区也空（合法状态）→ 不警告，免噪音
+    monkeypatch.setenv("HUB_HOME", str(tmp_path / ".hub"))
+    (tmp_path / "vault.toml").write_text("version = 2\n", encoding="utf-8")
+    (tmp_path / "opencode.json").write_text("{}", encoding="utf-8")
+    writes, warnings, plan = prepare_memory_views(tmp_path, _dev(tmp_path))
+    assert not any("shared/memory 为空" in w for w in warnings)
+
+def test_empty_shared_warning_does_not_change_writes_or_raise(tmp_path, monkeypatch):
+    # 只加 warning：写清单照常（3 视图 + CLAUDE.md + AGENTS.md），不抛、不改写入语义
+    monkeypatch.setenv("HUB_HOME", str(tmp_path / ".hub"))
+    (tmp_path / "vault.toml").write_text("version = 2\n", encoding="utf-8")
+    (tmp_path / "opencode.json").write_text("{}", encoding="utf-8")
+    _backup_mem(tmp_path, "box", "a")
+    writes, warnings, plan = prepare_memory_views(tmp_path, _dev(tmp_path))
+    paths = [p.name for p, _ in writes]
+    assert paths.count("MEMORY.md") == 3 and "CLAUDE.md" in paths and "AGENTS.md" in paths
 
 def test_opencode_default_path_untouched_without_explicit_optin(tmp_path, monkeypatch):
     # 用户决策：仅设备显式设 OPENCODE_CONFIG 才接 opencode。默认路径 ~/.config/opencode/
