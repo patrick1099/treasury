@@ -17,7 +17,7 @@ from hub.register import (register_skills, RegisterConflict,
                           check_link_collisions)
 from hub.promote import (promote_skill, promote_memory, promote_memory_all,
                          PromoteConflict, PromoteMemoryConflict)
-from hub.status_report import link_status
+from hub.status_report import link_status, view_health
 from hub.fslink import LinkError
 from hub.vaultpaths import SharedSkillsEscape
 from hub.hubconfig import read_config, write_config, check_config, ConfigConflict
@@ -39,9 +39,12 @@ def _lint(vault, exempt: set[str]) -> list[str]:
 def _cmd_status(args) -> int:
     vault_root = Path(args.vault)
     print(GitBackend(vault_root).status(), end="")
+    check = getattr(args, "check", False)
     try:
         dev = load_device(vault_root, args.host or current_host())
     except FileNotFoundError:
+        if check:
+            print("status --check 停止：本机没有 device.toml"); return 1   # 缺 device → 非零
         return 0                       # 本机没有 device.toml：只报 git 状态，不回归旧行为
     try:
         rows = link_status(vault_root, dev)
@@ -52,6 +55,12 @@ def _cmd_status(args) -> int:
         print("skill 链接:")
         for state, label in rows:
             print(f"  [{state}] {label}")
+    if check:
+        vh = view_health(vault_root, dev, _hub_root())
+        print("memory 视图:")
+        for state, label in vh:
+            print(f"  [{state}] {label}")
+        return 1 if any(x[0] != "ok" for x in (rows + vh)) else 0
     return 0
 
 def _hub_root() -> Path:
@@ -245,6 +254,9 @@ def _cmd_sync(args) -> int:
         return 1
     _write_index(vault_root, vault, Writer())
     b.publish("chore(hub): sync")
+    if getattr(args, "refresh", False):
+        return _cmd_refresh(args)          # 传播 refresh 的返回码，不再吞掉失败
+    print("提示：若 shared/ 有变化，运行 `hub refresh` 重算 memory 视图。")
     return 0
 
 def _cmd_memory_read(args) -> int:
@@ -267,8 +279,13 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--host", default=None)
     p = argparse.ArgumentParser(prog="hub")
     sub = p.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("status", parents=[common]).set_defaults(func=_cmd_status)
-    sub.add_parser("sync", parents=[common]).set_defaults(func=_cmd_sync)
+    st = sub.add_parser("status", parents=[common])
+    st.add_argument("--check", action="store_true", help="健康检查，不健康返回非零")
+    st.set_defaults(func=_cmd_status)
+
+    sy = sub.add_parser("sync", parents=[common])
+    sy.add_argument("--refresh", action="store_true", help="成功后串联 hub refresh 并传播其返回码")
+    sy.set_defaults(func=_cmd_sync)
     for name, fn in (("collect", _cmd_collect), ("bootstrap", _cmd_bootstrap)):
         sp = sub.add_parser(name, parents=[common])
         sp.add_argument("--dry-run", action="store_true",
