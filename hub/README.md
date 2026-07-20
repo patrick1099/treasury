@@ -181,8 +181,9 @@ memory 走一条与 skill 不同的路:**skill 活链、memory 走上行收集 +
   内含 `@~/.hub/views/claude/MEMORY.md` 指针(块外用户内容原样保留)。
 - Codex:`~/.codex/AGENTS.md`(或已探测到的活动 `AGENTS.override.md`)同样的受管块,但**内联紧凑
   索引**(无 `@import`,靠内联达成自动发现)。
-- opencode:若在用,把视图路径追加进 `opencode.json` 的 `instructions[]`(JSON 数组增改,
-  非文本块;解析失败/格式不对 → 拒改,只打印要手工加的条目,不阻断 register/refresh 的其余部分)。
+- opencode:**仅当 `device.toml` 显式设了 `OPENCODE_CONFIG`** 才接(该文件含明文密钥,不因默认
+  路径 `~/.config/opencode/opencode.json` 恰好存在就去碰它)。接时把视图路径追加进 `instructions[]`
+  (JSON 数组增改,非文本块;解析失败/格式不对 → 拒改,只打印要手工加的条目,不阻断 register/refresh 的其余部分)。
 
 **正文按需读**:视图文件只是索引,不含记忆正文。真要读某条记忆,由随包的 `hub-memory` skill
 调 `hub memory-read --tool <claude|codex|opencode> --name <n>`——只解析在**本机该 tool

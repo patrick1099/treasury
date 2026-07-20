@@ -85,14 +85,15 @@ def view_health(vault_root: Path, dev: DeviceProfile, hub_root: Path) -> list[tu
     if dev.paths.get("CODEX_HOME"):                     # Codex **活动**块（override 优先）
         tgt = _codex_agents_target(dev)
         rows.append((_block_state(tgt), str(tgt)))
-    # ⑥ opencode 条目（非严格 JSON→degraded）
-    ocfg = opencode_config_path(dev)
-    if ocfg.exists():
-        try:
-            data = json.loads(ocfg.read_text(encoding="utf-8"))
-            instr = data.get("instructions") if isinstance(data, dict) else None
-            ok = isinstance(instr, list) and _view_path("opencode").as_posix() in instr
-            rows.append(("ok" if ok else "degraded", str(ocfg)))
-        except (ValueError, OSError):
-            rows.append(("degraded", f"{ocfg}（非严格 JSON，未接线）"))
+    # ⑥ opencode 条目（仅设备显式设 OPENCODE_CONFIG 才报；不因默认路径恰有文件就碰它）
+    if dev.paths.get("OPENCODE_CONFIG"):
+        ocfg = opencode_config_path(dev)
+        if ocfg.exists():
+            try:
+                data = json.loads(ocfg.read_text(encoding="utf-8"))
+                instr = data.get("instructions") if isinstance(data, dict) else None
+                ok = isinstance(instr, list) and _view_path("opencode").as_posix() in instr
+                rows.append(("ok" if ok else "degraded", str(ocfg)))
+            except (ValueError, OSError):
+                rows.append(("degraded", f"{ocfg}（非严格 JSON，未接线）"))
     return rows

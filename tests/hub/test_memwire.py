@@ -85,3 +85,24 @@ def test_commit_partial_then_rerun_converges(tmp_path, monkeypatch):
     for t in ("claude", "codex", "opencode"):
         assert (hub_views_home() / t / "MEMORY.md").exists()
     assert "hub:begin" in (tmp_path / ".claude" / "CLAUDE.md").read_text(encoding="utf-8")
+
+def test_opencode_default_path_untouched_without_explicit_optin(tmp_path, monkeypatch):
+    # 用户决策：仅设备显式设 OPENCODE_CONFIG 才接 opencode。默认路径 ~/.config/opencode/
+    # opencode.json 恰好存在（且带密钥）也绝不碰它——不 plan、不写、不 warn。
+    # （HOME 已被 conftest 沙箱到 tmp，这里在沙箱 home 里造默认路径文件。）
+    monkeypatch.setenv("HUB_HOME", str(tmp_path / ".hub"))
+    (tmp_path / "vault.toml").write_text("version = 2\n", encoding="utf-8")
+    _shared_mem(tmp_path, "a", "[global]")
+    dev = DeviceProfile(host="box", classes=[], projects=[], paths={   # 无 OPENCODE_CONFIG
+        "CLAUDE_HOME": (tmp_path / ".claude").as_posix(),
+        "CODEX_HOME": (tmp_path / ".codex").as_posix(),
+    }, sources={})
+    default_cfg = Path.home() / ".config" / "opencode" / "opencode.json"
+    default_cfg.parent.mkdir(parents=True, exist_ok=True)
+    default_cfg.write_text('{"model": "x"}', encoding="utf-8")
+    writes, warnings, plan = prepare_memory_views(tmp_path, dev)
+    assert plan is None                                            # 没接 opencode
+    assert not any("opencode" in w for w in warnings)
+    wire_memory_views(tmp_path, dev, Writer())
+    assert default_cfg.read_text(encoding="utf-8") == '{"model": "x"}'   # 一个字节没动
+    assert (hub_views_home() / "claude" / "MEMORY.md").exists()    # 其余照常

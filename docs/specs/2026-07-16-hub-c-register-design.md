@@ -200,7 +200,8 @@ Plan 1 合并后同事复查查出两个代码边界洞，必须先补：
 
 ### 9.6 opencode 配置写入（含明文密钥，走 guard 范畴）
 
-- **路径**：优先 `device.toml` 的 `OPENCODE_CONFIG`，缺省 `~/.config/opencode/opencode.json`。
+- **触发（2026-07-20 用户定稿）**：register/refresh **仅当 `device.toml` 显式设了 `OPENCODE_CONFIG`** 才接 opencode——**绝不**因默认路径 `~/.config/opencode/opencode.json`（含明文密钥）恰好存在就去写它。未显式接入的设备，opencode 完全不碰（不写、不进 `status --check`）。
+- **路径**：`opencode_config_path(dev)` 仍解析 `OPENCODE_CONFIG`（缺省 `~/.config/opencode/opencode.json`）作为路径解析器，但只有上面的触发条件成立时才被调用。
 - **JSONC/解析失败**：能严格 `json.loads` → 手术式加 `instructions[]`（按串去重、保留其余键）+ 原子替换；遇注释/尾逗号/解析失败 → **拒改**，打印要手工添加的完整 instructions 条目。**保留未知键，但不声称保留原格式**（`json.dumps` 会重排版）。opencode 是次级目标，拒改不阻断主链路。
 - **备份**：**不复制整份密钥文件**；写**最小回滚日志**到 `~/.hub/backups/`（配置路径 / 改前文件哈希 / 原 `instructions` 是缺失还是具体值 / 本次加入的条目），明确不进金库、不进 collect。原子写解截断，最小日志解语义回滚。
 
