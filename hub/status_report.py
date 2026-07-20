@@ -93,6 +93,6 @@ def view_health(vault_root: Path, dev: DeviceProfile, hub_root: Path) -> list[tu
             instr = data.get("instructions") if isinstance(data, dict) else None
             ok = isinstance(instr, list) and _view_path("opencode").as_posix() in instr
             rows.append(("ok" if ok else "degraded", str(ocfg)))
-        except ValueError:
+        except (ValueError, OSError):
             rows.append(("degraded", f"{ocfg}（非严格 JSON，未接线）"))
     return rows
