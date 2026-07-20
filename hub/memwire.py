@@ -49,8 +49,8 @@ def prepare_memory_views(vault_root: Path, dev):
         existing = target.read_text(encoding="utf-8") if target.exists() else ""
         writes.append((target, upsert_block(existing, render_codex_block(per_tool["codex"]))))
     plan = None
-    if dev.paths.get("OPENCODE_CONFIG") or (Path.home() / ".config" / "opencode" / "opencode.json").exists():
-        plan = plan_instruction(dev, _view_path("opencode"))
+    if dev.paths.get("OPENCODE_CONFIG"):        # 仅设备显式 opt-in 才接 opencode；绝不因默认路径
+        plan = plan_instruction(dev, _view_path("opencode"))   # 恰好存在一份带密钥的 opencode.json 就去写它
         if plan.action == "refuse":
             warnings.append(f"opencode: {plan.reason}")
     return writes, warnings, plan
