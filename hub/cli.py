@@ -11,15 +11,20 @@ from hub.collect import plan_deletions, preflight, run_all
 from hub.collect.errors import MissingSourceError
 from hub.frontmatter import FrontmatterError
 from hub.writer import Writer
-from hub.register import register_skills, RegisterConflict
+from hub.register import (register_skills, RegisterConflict,
+                          plan_register_skills, commit_register_skills,
+                          plan_hub_memory_skill, commit_hub_memory_skill,
+                          check_link_collisions)
 from hub.promote import (promote_skill, promote_memory, promote_memory_all,
                          PromoteConflict, PromoteMemoryConflict)
 from hub.status_report import link_status
 from hub.fslink import LinkError
 from hub.vaultpaths import SharedSkillsEscape
-from hub.hubconfig import read_config
+from hub.hubconfig import read_config, write_config, check_config, ConfigConflict
 from hub.memread import read_memory, MemoryNotInView
 from hub.memview import ViewScopeError, SharedMemoryError
+from hub.memwire import prepare_memory_views, commit_memory_views, wire_memory_views
+from hub.textblock import BlockError
 
 def _lint(vault, exempt: set[str]) -> list[str]:
     errs = []
@@ -49,18 +54,44 @@ def _cmd_status(args) -> int:
             print(f"  [{state}] {label}")
     return 0
 
+def _hub_root() -> Path:
+    return Path(__file__).resolve().parents[1]      # 仓库根（hub/ 的上一级）
+
 def _cmd_register(args) -> int:
-    vault_root = Path(args.vault)
+    vault_root = Path(args.vault); host = args.host or current_host()
+    w = Writer(dry_run=args.dry_run); hub_root = _hub_root()
     try:
-        dev = load_device(vault_root, args.host or current_host())
-        done = register_skills(vault_root, dev, Writer(dry_run=args.dry_run))
-    except (RegisterConflict, FileNotFoundError, LinkError, SharedSkillsEscape) as e:
-        print(e)
-        return 1
-    verb = "预计就位" if args.dry_run else "已就位"
-    print(f"{verb} {len(done)} 个 skill 链接")
-    for d in done:
-        print("  ", d)
+        dev = load_device(vault_root, host)
+        # ---- 预检/准备（只读；任何确定性错误在此抛、零写入）----
+        to_link, ensured = plan_register_skills(vault_root, dev)
+        hm_links = plan_hub_memory_skill(hub_root, dev)
+        check_link_collisions(to_link, hm_links)     # 跨来源同名（如金库也有 hub-memory）→ 零写
+        check_config(vault_root, host)
+        writes, warnings, oc_plan = prepare_memory_views(vault_root, dev)
+        # ---- 提交（预检全过之后才动笔）----
+        commit_register_skills(to_link, w)
+        commit_hub_memory_skill(hm_links, w)
+        write_config(vault_root, host, hub_root, w)
+        commit_memory_views(writes, oc_plan, w)
+    except (RegisterConflict, FileNotFoundError, LinkError, SharedSkillsEscape,
+            ConfigConflict, ViewScopeError, SharedMemoryError, BlockError) as e:
+        print(e); return 1
+    print(f"{'预计就位' if args.dry_run else '已就位'} {len(ensured)} 个 skill 链接 + hub-memory")
+    for x in warnings:                               # opencode refuse 等：提示不阻断
+        print("  ⚠", x)
+    return 0
+
+def _cmd_refresh(args) -> int:
+    vault_root = Path(args.vault); host = args.host or current_host()
+    w = Writer(dry_run=getattr(args, "dry_run", False))
+    try:
+        dev = load_device(vault_root, host)
+        summary = wire_memory_views(vault_root, dev, w)
+    except (FileNotFoundError, ViewScopeError, SharedMemoryError, BlockError) as e:
+        print(e); return 1
+    print(f"memory 视图已重算: {summary}")
+    for x in summary.get("warnings", []):
+        print("  ⚠", x)
     return 0
 
 def _cmd_promote(args) -> int:
@@ -250,6 +281,10 @@ def build_parser() -> argparse.ArgumentParser:
     reg.add_argument("--dry-run", action="store_true",
                      help="只报告会建哪些链接，一个字节都不落盘")
     reg.set_defaults(func=_cmd_register)
+
+    rf = sub.add_parser("refresh", parents=[common])
+    rf.add_argument("--dry-run", action="store_true")
+    rf.set_defaults(func=_cmd_refresh)
 
     pro = sub.add_parser("promote", parents=[common])
     pro.add_argument("--tool", required=True, choices=["claude", "codex"],
