@@ -29,7 +29,9 @@ def skill_targets(dev: DeviceProfile) -> list[Path]:
     out.append(_agents_home(dev) / "skills")     # Codex + opencode 读这里
     return out
 
-def register_skills(vault_root: Path, dev: DeviceProfile, w: Writer) -> list[str]:
+def plan_register_skills(vault_root: Path, dev: DeviceProfile):
+    """register_skills 的只读预检（含 Task 1/2 的容器与逃逸检查）：返回 (to_link, ensured)；
+    任何冲突→RegisterConflict/SharedSkillsEscape，零写入。"""
     vault_root = Path(vault_root)
     shared = shared_skills_dir(vault_root)             # 断言容器不逃逸
     skills = sorted((d for d in shared.iterdir() if d.is_dir()), key=lambda p: p.name) \
@@ -66,7 +68,50 @@ def register_skills(vault_root: Path, dev: DeviceProfile, w: Writer) -> list[str
         raise RegisterConflict(
             "以下位置已被非 hub 管理的同名项占用，register 不覆盖、未写任何链接。"
             "请先移开或改名：\n  " + "\n  ".join(conflicts))
+    return to_link, ensured
 
+def commit_register_skills(to_link, w: Writer) -> None:
     for src, link in to_link:
         w.make_dir_link(src, link)
+
+def register_skills(vault_root: Path, dev: DeviceProfile, w: Writer) -> list[str]:      # wrapper 保留（既有测试/调用不变）
+    to_link, ensured = plan_register_skills(vault_root, dev)
+    commit_register_skills(to_link, w)
     return ensured
+
+def plan_hub_memory_skill(hub_root: Path, dev: DeviceProfile) -> list[tuple[Path, Path]]:
+    """随包发的 hub-memory skill 待建链接（源是 hub 包、非金库）。同名被别的占用→RegisterConflict。"""
+    src = Path(hub_root) / "hub" / "skills" / "hub-memory"
+    if not src.is_dir():
+        raise FileNotFoundError(f"hub 包里没有 hub-memory skill: {src}")
+    links: list[tuple[Path, Path]] = []
+    for target_dir in skill_targets(dev):
+        link = target_dir / "hub-memory"
+        if os.path.lexists(link) and not resolves_to(link, src):
+            raise RegisterConflict(f"{link} 已被非 hub 的同名项占用，register 不覆盖。")
+        if not os.path.lexists(link):
+            links.append((src, link))
+    return links
+
+def commit_hub_memory_skill(links, w: Writer) -> list[str]:
+    for src, link in links:
+        w.make_dir_link(src, link)
+    return [str(link) for _, link in links]
+
+def install_hub_memory_skill(hub_root, dev, w) -> list[str]:   # wrapper（既有测试用）
+    return commit_hub_memory_skill(plan_hub_memory_skill(hub_root, dev), w)
+
+def check_link_collisions(*link_lists) -> None:
+    """跨来源的 link 路径唯一性预检。若金库里恰好也有一把名为 `hub-memory` 的普通 shared
+    skill，`plan_register_skills` 会计划把它链进 `<tool>/skills/hub-memory`，而
+    `plan_hub_memory_skill` 又计划把随包 skill 链进同一路径——两段预检都通过、提交时才撞、
+    留下半套。这里在提交前把两批待建路径并起来查唯一性：同一目标被两个不同源指向→
+    RegisterConflict，零写入。"""
+    seen: dict[str, Path] = {}
+    for links in link_lists:
+        for src, link in links:
+            key = os.path.join(os.path.realpath(Path(link).parent), Path(link).name)
+            if key in seen and os.path.realpath(seen[key]) != os.path.realpath(src):
+                raise RegisterConflict(
+                    f"链接路径 {link} 被两个不同来源同时占用（{seen[key]} vs {src}），register 拒绝、零写入。")
+            seen[key] = src
