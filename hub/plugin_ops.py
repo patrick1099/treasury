@@ -194,3 +194,52 @@ def prepare_plugin_refresh(vault_root, dev, runner=None) -> PluginPlan:
                     f"需 bump {e.name}({tool})：源码已变但 manifest 版本未升，先 bump+commit 再 refresh")
             actions += _reinstall_chain(tool, e.name, pid, installed[pid], head, version)
     return PluginPlan(actions, [])
+
+@dataclass
+class PluginHealth:
+    name: str; tool: str; state: str
+
+def _health_state(vault_root, dev, e, tool, installed, mkts, ledger) -> str:
+    name = e.name; pid = f"{name}@{name}"
+    src_dir = Path(vault_root)/"shared/plugins"/name
+    try:
+        _containment(vault_root, name)
+    except PluginContainmentError:
+        return "missing-source"                 # 缺失、坏链、逃逸链接都不是可用活源
+    if name not in mkts: return "unregistered"
+    if not _same_path(mkts[name], _plugin_source(vault_root, name)): return "source-moved"
+    desired = name in dev.plugins.get(tool, [])
+    present = pid in installed
+    active = present and (installed[pid].enabled if tool == "claude" else True)
+    if desired and not active: return "enable-drift"
+    if not desired and present: return "enable-drift"
+    if present:
+        try:
+            if _is_dirty(src_dir): return "dirty"
+            head = _head_sha(src_dir)
+        except PluginRepoUnavailable:
+            return "missing-source"             # 父仓 clone 后尚未 rehydrate 的目录
+        base = ledger.get(name, {}).get(tool)
+        if base is None: return "no-baseline"
+        if head != base.sha and plugin_version(vault_root, name) == base.version:
+            return "stale"
+    if e.remote:
+        cur = subprocess.run(["git","-C",str(src_dir),"remote","get-url","origin"],
+                             capture_output=True, text=True).stdout.strip()
+        if (e.sha and _head_sha(src_dir) != e.sha) or cur != e.remote:
+            return "drift"
+    return "ok"
+
+def plugin_health(vault_root, dev, runner=None) -> list:
+    entries = load_plugin_manifest(vault_root)
+    if not entries: return []
+    require_version_exactly(vault_root, 3)
+    ledger = read_state()
+    plats = sorted({p for e in entries for p in e.platforms})
+    snap = {t: (installed_plugins(t, runner=runner), marketplaces(t, runner=runner)) for t in plats}
+    out = []
+    for e in entries:
+        for tool in e.platforms:
+            installed, mkts = snap[tool]
+            out.append(PluginHealth(e.name, tool, _health_state(vault_root, dev, e, tool, installed, mkts, ledger)))
+    return out
