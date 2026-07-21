@@ -224,10 +224,13 @@ def _health_state(vault_root, dev, e, tool, installed, mkts, ledger) -> str:
         if head != base.sha and plugin_version(vault_root, name) == base.version:
             return "stale"
     if e.remote:
-        cur = subprocess.run(["git","-C",str(src_dir),"remote","get-url","origin"],
-                             capture_output=True, text=True).stdout.strip()
-        if (e.sha and _head_sha(src_dir) != e.sha) or cur != e.remote:
-            return "drift"
+        try:
+            cur = subprocess.run(["git","-C",str(src_dir),"remote","get-url","origin"],
+                                 capture_output=True, text=True).stdout.strip()
+            if (e.sha and _head_sha(src_dir) != e.sha) or cur != e.remote:
+                return "drift"
+        except PluginRepoUnavailable:
+            return "missing-source"             # 父仓 clone 后尚未 rehydrate 的目录
     return "ok"
 
 def plugin_health(vault_root, dev, runner=None) -> list:

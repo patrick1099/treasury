@@ -105,6 +105,14 @@ def test_remote_drift(tmp_path, monkeypatch):
         runner=_runner(mkts=[{"name":"cjt","path":str(src)}],inst=_ci())),"cjt","claude")
     assert state=="drift"
 
+def test_drift_check_missing_source_when_not_installed_and_no_git(tmp_path, monkeypatch):
+    monkeypatch.setenv("HUB_HOME", str(tmp_path/".hub"))
+    _base(tmp_path); src=_entry(tmp_path,"cjt")   # git=False：无 .git，非嵌套 git 仓
+    manifest='[cjt]\nplatforms=["claude"]\n[cjt.repository]\nremote="git@expected/repo.git"\nsha="deadbeef"\n'
+    dev=_write(tmp_path, manifest, '[plugins.claude]\nenabled=[]\n')
+    hs=plugin_health(tmp_path,dev,runner=_runner(mkts=[{"name":"cjt","path":src}],inst=[]))
+    assert _one(hs,"cjt","claude")=="missing-source"
+
 def test_ok_installed_baseline(tmp_path, monkeypatch):
     monkeypatch.setenv("HUB_HOME", str(tmp_path/".hub"))
     _base(tmp_path); src=_entry(tmp_path,"cjt", git=True)
