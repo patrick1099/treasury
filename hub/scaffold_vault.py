@@ -64,7 +64,7 @@ def scaffold(root: Path, host: str, w: Writer, force: bool = False) -> None:
 
     - `lint-exempt.txt` —— 用户手工整理的豁免名单,清掉就是删数据。
     - `vault.toml` —— 金库的格式版本标记,由建库那台机写下。第二台机再写一遍
-      `version = 2` 是撒谎式降级(万一金库已经是更高版本)。
+      `version = 3` 是撒谎式降级(万一金库已经是更高版本)。
 
     `SCHEMA.md` 相反:它是从代码里派生的契约文本,每次都该重写成当前版本。
     """
@@ -83,7 +83,7 @@ def scaffold(root: Path, host: str, w: Writer, force: bool = False) -> None:
                 f"要加**别的**设备就把 host 换成那台机的名字;"
                 f"确实要把本机档案推倒重来才加 --force(先备份 device.toml)。")
     if not (root / "vault.toml").is_file():
-        w.write_text(root / "vault.toml", "version = 2\n")
+        w.write_text(root / "vault.toml", "version = 3\n")
     w.write_text(root / "SCHEMA.md", SCHEMA_MD)            # 派生物:每次重写
     if not (root / "lint-exempt.txt").is_file():
         w.write_text(root / "lint-exempt.txt",

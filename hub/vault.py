@@ -75,3 +75,21 @@ def load_device(root: Path, host: str) -> DeviceProfile:
         paths=dict(raw.get("paths", {})),
         sources={k: _tool_sources(v) for k, v in raw.get("sources", {}).items()},
     )
+
+class UnsupportedVaultVersion(RuntimeError):
+    pass
+
+def _read_version(root) -> int:
+    return int(tomllib.loads((Path(root)/"vault.toml").read_text(encoding="utf-8")).get("version", 1))
+
+def require_supported_version(root, max_known: int = 3) -> int:
+    v = _read_version(root)
+    if v > max_known:
+        raise UnsupportedVaultVersion(
+            f"金库版本 {v} 高于本 hub 所知（最高 {max_known}）——请先升级 hub，绝不按旧模型运行。")
+    return v
+
+def require_version_exactly(root, want: int) -> None:
+    v = _read_version(root)
+    if v != want:
+        raise UnsupportedVaultVersion(f"本命令要求金库 version=={want}，当前是 {v}——先 `hub migrate-schema --to {want}`。")
