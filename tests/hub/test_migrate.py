@@ -41,3 +41,18 @@ def test_dry_run_writes_nothing(tmp_path):
     v = _mk_vault(tmp_path, [("a", "[global]")])
     migrate_schema(v, 2, Writer(dry_run=True))
     assert "version = 1" in (v / "vault.toml").read_text(encoding="utf-8")
+
+def test_migrate_2_to_3(tmp_path):
+    (tmp_path/"vault.toml").write_text("version = 2\n", encoding="utf-8")
+    migrate_schema(tmp_path, 3, Writer())
+    assert (tmp_path/"vault.toml").read_text(encoding="utf-8").strip() == "version = 3"
+
+def test_migrate_3_only_from_2(tmp_path):
+    (tmp_path/"vault.toml").write_text("version = 1\n", encoding="utf-8")
+    with pytest.raises(SchemaMigrationError):
+        migrate_schema(tmp_path, 3, Writer())
+
+def test_migrate_rejects_unknown_target(tmp_path):
+    (tmp_path/"vault.toml").write_text("version = 2\n", encoding="utf-8")
+    with pytest.raises(SchemaMigrationError):
+        migrate_schema(tmp_path, 4, Writer())
