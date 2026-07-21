@@ -74,6 +74,8 @@ def load_device(root: Path, host: str) -> DeviceProfile:
         projects=list(raw.get("projects", [])),
         paths=dict(raw.get("paths", {})),
         sources={k: _tool_sources(v) for k, v in raw.get("sources", {}).items()},
+        plugins={t: list((v or {}).get("enabled", []))
+                 for t, v in (raw.get("plugins") or {}).items()},   # 新增
     )
 
 class UnsupportedVaultVersion(RuntimeError):

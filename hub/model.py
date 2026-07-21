@@ -44,6 +44,7 @@ class DeviceProfile:
     projects: list[str]
     paths: dict[str, str]
     sources: dict[str, ToolSources] = field(default_factory=dict)   # "claude" / "codex"
+    plugins: dict = field(default_factory=dict)      # 新增：{tool: [enabled plugin names]}
 
 @dataclass
 class VaultConfig:
