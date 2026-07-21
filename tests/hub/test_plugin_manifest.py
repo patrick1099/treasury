@@ -39,3 +39,21 @@ def test_remote_optional_repo(tmp_path):
     _manifest(tmp_path, '[cjt]\nplatforms=["claude"]\n[cjt.repository]\nremote="git@x"\n')
     _plugin(tmp_path, "cjt")
     assert load_plugin_manifest(tmp_path)[0].remote == "git@x"
+
+def test_identity_rejects_case_mismatched_dir(tmp_path):
+    # manifest key is "cjt" but the actual on-disk directory is "CJT" (Windows/macOS
+    # case-insensitive filesystems would otherwise silently accept this). The JSON
+    # contents inside are correctly named "cjt", so only the directory-name check
+    # (previously a tautological no-op comparing n to n) can catch this.
+    _manifest(tmp_path, '[cjt]\nplatforms = ["claude"]\n')
+    _plugin(tmp_path, "CJT", mkt="cjt", plug="cjt")
+    with pytest.raises(PluginIdentityError):
+        check_identity(tmp_path, load_plugin_manifest(tmp_path)[0])
+
+def test_identity_missing_claude_plugin_dir(tmp_path):
+    # The plugin's top-level directory exists on disk (so the casefold lookup
+    # succeeds) but it has no .claude-plugin/ subdirectory at all.
+    _manifest(tmp_path, '[cjt]\nplatforms = ["claude"]\n')
+    (tmp_path/"shared/plugins/cjt").mkdir(parents=True)
+    with pytest.raises(PluginIdentityError):
+        check_identity(tmp_path, load_plugin_manifest(tmp_path)[0])
