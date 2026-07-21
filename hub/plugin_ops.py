@@ -1,8 +1,9 @@
 import os
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from hub.plugin_cli import run_cli, CliCommand, installed_plugins, marketplaces, preflight_cli
-from hub.plugin_state import record
+from hub.plugin_state import record, read_state
 from hub.writer import Writer
 from hub.vault import require_version_exactly
 from hub.plugin_manifest import load_plugin_manifest, check_identity, plugin_version
@@ -128,4 +129,68 @@ def prepare_plugin_register(vault_root, dev, runner=None) -> PluginPlan:
                 actions += _ensure_installed_enabled(tool, e.name, pid, installed, dep)
             else:
                 actions += _ensure_disabled(tool, e.name, pid, installed)
+    return PluginPlan(actions, [])
+
+class PluginRepoUnavailable(RuntimeError): pass
+
+def _git_text(src, *argv) -> str:
+    r = subprocess.run(["git","-C",str(src),*argv], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise PluginRepoUnavailable(
+            f"{src} 不是可用的嵌套 git 仓（需要 restore/rehydrate）：{r.stderr.strip()}")
+    return r.stdout.strip()
+
+def _head_sha(src) -> str:
+    return _git_text(src, "rev-parse", "HEAD")
+
+def _is_dirty(src) -> bool:
+    return bool(_git_text(src, "status", "--porcelain"))
+
+def _reinstall_chain(tool, name, pid, inst, head, version):
+    if tool == "codex":
+        a = PluginAction(f"{name}:codex:reinstall", f"codex 重装 {pid}",
+                         cli=CliCommand("codex",["plugin","add",pid]))
+        return [a, PluginAction(f"{name}:codex:state", f"台账 {name}/codex",
+                                depends_on=(a.id,), state=(name,"codex",head,version))]
+    u = PluginAction(f"{name}:claude:uninstall", f"claude 卸载 {pid}",
+                     cli=CliCommand("claude",["plugin","uninstall",pid,"--keep-data","--scope","user"]))
+    i = PluginAction(f"{name}:claude:install", f"claude 重装 {pid}", depends_on=(u.id,),
+                     cli=CliCommand("claude",["plugin","install",pid,"--scope","user"]))
+    chain, last = [u, i], i.id
+    if not inst.enabled:                       # reinstall 会重新 enable → 恢复 disabled
+        d = PluginAction(f"{name}:claude:redisable", f"claude 恢复禁用 {pid}", depends_on=(i.id,),
+                         cli=CliCommand("claude",["plugin","disable",pid,"--scope","user"]))
+        chain.append(d); last = d.id
+    chain.append(PluginAction(f"{name}:claude:state", f"台账 {name}/claude",
+                              depends_on=(last,), state=(name,"claude",head,version)))
+    return chain
+
+def prepare_plugin_refresh(vault_root, dev, runner=None) -> PluginPlan:
+    entries = load_plugin_manifest(vault_root)
+    if not entries: return PluginPlan([], [])
+    require_version_exactly(vault_root, 3)
+    ledger = read_state()
+    plats = sorted({p for e in entries for p in e.platforms})
+    for tool in plats: preflight_cli(tool, NEEDED[tool], runner=runner)
+    snap = {t: installed_plugins(t, runner=runner) for t in plats}
+    actions = []
+    for e in entries:
+        _containment(vault_root, e.name)
+        check_identity(vault_root, e)
+        src = _plugin_source(vault_root, e.name)
+        for tool in e.platforms:
+            installed = snap[tool]; pid = f"{e.name}@{e.name}"
+            if pid not in installed: continue          # 未装→跳过（refresh 不装）
+            if _is_dirty(src): raise PluginRepoDirty(f"仓 {e.name} 未提交，先提交你的 bump")
+            head = _head_sha(src); version = plugin_version(vault_root, e.name)
+            base = ledger.get(e.name, {}).get(tool)
+            if base is None:
+                # spec P5：首次不是“只记账”，必须让已安装平台真实重读一次，再建立基线。
+                actions += _reinstall_chain(tool, e.name, pid, installed[pid], head, version)
+                continue
+            if base.sha == head: continue              # no-op
+            if version == base.version:
+                raise PluginBumpNeeded(
+                    f"需 bump {e.name}({tool})：源码已变但 manifest 版本未升，先 bump+commit 再 refresh")
+            actions += _reinstall_chain(tool, e.name, pid, installed[pid], head, version)
     return PluginPlan(actions, [])
