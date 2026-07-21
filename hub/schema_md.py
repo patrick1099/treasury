@@ -32,7 +32,7 @@ SCHEMA_MD = """# 金库 SCHEMA —— hub 与各工具 skill 之间的契约
 ## 1. 两个区
 
     vault/
-    ├─ vault.toml        金库格式版本(version = 2)。以后改布局靠它做迁移判断
+    ├─ vault.toml        金库格式版本(version = 3)。以后改布局靠它做迁移判断
     ├─ SCHEMA.md         就是本文件
     ├─ MEMORY.md         ✳ 全部记忆的索引(派生物,勿手改——见 §5)
     ├─ lint-exempt.txt   裸路径检查的豁免名单(见 §4)
@@ -455,4 +455,23 @@ xu-local = "directory:C:\\\\Users\\\\x\\\\.claude\\\\plugins-dev"
 - **hooks**:见 §8。现状是**没有备份**:用户级 hook 的值是嵌套结构,TOML 写出器写不出,
   `[hooks]` 那张表被跳过(带警告)。要真正备份 hook,得先给写出器补嵌套表,或者
   想清楚 hook 在金库里该长什么样(照抄 JSON?单独一个 `hooks/` 目录?)——**都还没做**。
+
+## 12. v3：shared 三分跟踪与插件（v3 新增）
+
+`shared/` 是所有"项目无关、每机都同步"基础设施的**唯一稳态活源**：改/commit/push 都从这里发生。
+
+**三分跟踪**：父仓（hub-vault）跟踪产物源码文件；**排除每个产物内的嵌套 `.git/`**（一个 `shared/<类>/<name>`
+可以自身是独立 git 仓）；密钥/token/auth **永不进 shared**，留本机私密区。
+
+**通用 induction**：把带 `.git` 的产物首次纳入父仓跟踪时，hub 会临时把该产物的 `.git` 移到父仓 git admin 目录、
+`git add` 成文件 blob（非 gitlink）、再移回——因此父仓 clone 只得**文件、无嵌套 `.git`**，恢复时按清单重贴 remote。
+
+**`shared/plugins/manifest.toml`**（父仓跟踪，权威清单）：每插件一表——
+```toml
+[<name>]
+platforms = ["claude", "codex"]   # 必填：该插件面向哪些平台
+[<name>.repository]               # 可选：声明为独立仓才要
+remote = "git@github.com:you/<name>.git"
+sha = "..."                       # 可选：钉住版本
+```
 """
