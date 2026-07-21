@@ -23,8 +23,14 @@ from hub.vaultpaths import SharedSkillsEscape
 from hub.hubconfig import read_config, write_config, check_config, ConfigConflict
 from hub.memread import read_memory, MemoryNotInView
 from hub.memview import ViewScopeError, SharedMemoryError
-from hub.memwire import prepare_memory_views, commit_memory_views, wire_memory_views
+from hub.memwire import prepare_memory_views, commit_memory_views
 from hub.textblock import BlockError
+from hub.plugin_ops import (prepare_plugin_register, prepare_plugin_refresh, execute_plugin_plan,
+                            plugin_health, PluginBumpNeeded, PluginRepoDirty, PluginRepoUnavailable,
+                            PluginContainmentError)
+from hub.plugin_manifest import PluginManifestError, PluginIdentityError
+from hub.plugin_cli import CliUnavailable
+from hub.vault import UnsupportedVaultVersion
 
 def _lint(vault, exempt: set[str]) -> list[str]:
     errs = []
@@ -60,7 +66,18 @@ def _cmd_status(args) -> int:
         print("memory 视图:")
         for state, label in vh:
             print(f"  [{state}] {label}")
-        return 1 if any(x[0] != "ok" for x in (rows + vh)) else 0
+        try:
+            ph = plugin_health(vault_root, dev)
+        except (PluginManifestError, PluginIdentityError, PluginContainmentError,
+                PluginRepoUnavailable, CliUnavailable, UnsupportedVaultVersion) as e:
+            print(f"plugin status 停止: {e}")
+            return 1
+        if ph:
+            print("插件:")
+            for h in ph:
+                print(f"  [{h.state}] {h.name}@{h.tool}")
+        return 1 if (any(x[0] != "ok" for x in (rows + vh))
+                     or any(h.state != "ok" for h in ph)) else 0
     return 0
 
 def _hub_root() -> Path:
@@ -77,31 +94,48 @@ def _cmd_register(args) -> int:
         check_link_collisions(to_link, hm_links)     # 跨来源同名（如金库也有 hub-memory）→ 零写
         check_config(vault_root, host)
         writes, warnings, oc_plan = prepare_memory_views(vault_root, dev)
+        plugin_plan = prepare_plugin_register(vault_root, dev)          # 预检并入 prepare
         # ---- 提交（预检全过之后才动笔）----
         commit_register_skills(to_link, w)
         commit_hub_memory_skill(hm_links, w)
         write_config(vault_root, host, hub_root, w)
         commit_memory_views(writes, oc_plan, w)
+        prep = execute_plugin_plan(plugin_plan, w)                      # 提交期执行 CLI
     except (RegisterConflict, FileNotFoundError, LinkError, SharedSkillsEscape,
-            ConfigConflict, ViewScopeError, SharedMemoryError, BlockError) as e:
+            ConfigConflict, ViewScopeError, SharedMemoryError, BlockError,
+            PluginManifestError, PluginIdentityError, PluginContainmentError,
+            CliUnavailable, UnsupportedVaultVersion) as e:
         print(e); return 1
     print(f"{'预计就位' if args.dry_run else '已就位'} {len(ensured)} 个 skill 链接 + hub-memory")
     for x in warnings:                               # opencode refuse 等：提示不阻断
         print("  ⚠", x)
-    return 0
+    if plugin_plan.actions and not args.dry_run:
+        print(f"插件: 成功 {len(prep.succeeded)} / 未执行 {len(prep.skipped)} / 失败 {len(prep.failed)}")
+        for i, why in prep.failed:
+            print(f"  ✗ {i}: {why}")
+    return 0 if not prep.failed else 1
 
 def _cmd_refresh(args) -> int:
     vault_root = Path(args.vault); host = args.host or current_host()
-    w = Writer(dry_run=getattr(args, "dry_run", False))
+    dry = getattr(args, "dry_run", False); w = Writer(dry_run=dry)
     try:
         dev = load_device(vault_root, host)
-        summary = wire_memory_views(vault_root, dev, w)
-    except (FileNotFoundError, ViewScopeError, SharedMemoryError, BlockError) as e:
+        writes, warnings, oc_plan = prepare_memory_views(vault_root, dev)
+        plugin_plan = prepare_plugin_refresh(vault_root, dev)
+        commit_memory_views(writes, oc_plan, w)
+        prep = execute_plugin_plan(plugin_plan, w)
+    except (FileNotFoundError, ViewScopeError, SharedMemoryError, BlockError,
+            PluginBumpNeeded, PluginRepoDirty, PluginManifestError, PluginIdentityError,
+            PluginRepoUnavailable, PluginContainmentError, CliUnavailable,
+            UnsupportedVaultVersion) as e:
         print(e); return 1
+    summary = {"written": len(writes), "warnings": warnings}
     print(f"memory 视图已重算: {summary}")
     for x in summary.get("warnings", []):
         print("  ⚠", x)
-    return 0
+    if plugin_plan.actions and not dry:
+        print(f"插件: 成功 {len(prep.succeeded)} / 未执行 {len(prep.skipped)} / 失败 {len(prep.failed)}")
+    return 0 if not prep.failed else 1
 
 def _cmd_promote(args) -> int:
     vault_root = Path(args.vault)
