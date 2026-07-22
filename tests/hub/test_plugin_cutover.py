@@ -72,6 +72,47 @@ def test_unknown_old_market_identity_blocks(tmp_path):
         prepare_cutover(tmp_path,dev,runner=_runner(
             codex_mkts=[{"name":"xu-local","root":"C:/old"}],codex_inst=installed))
 
+def test_cutover_reinstall_claude_desired_drops_redundant_enable(tmp_path):
+    # 同身份换源(cjt)且期望启用：install 自动启用,不得再补 cutover-enable
+    dev,_=_setup(tmp_path, name="cjt", platforms=("claude",), enabled_tools=("claude",))
+    installed=[{"id":"cjt@cjt","version":"0.1.0","enabled":True,"installPath":"C:/old"}]
+    markets=[{"name":"cjt","path":"C:/old"}]        # 旧路径 → 触发换源重装
+    plan=prepare_cutover(tmp_path,dev,runner=_runner(claude_mkts=markets,claude_inst=installed))
+    ids=_ids(plan)
+    assert "cjt:claude:cutover-uninstall" in ids
+    assert "cjt:claude:cutover-install" in ids
+    assert "cjt:claude:cutover-enable" not in ids
+    state=next(a for a in plan.actions if a.id=="cjt:claude:cutover-state")
+    assert "cjt:claude:cutover-install" in state.depends_on
+
+def test_rerun_from_partial_converges_claude_retire_only(tmp_path):
+    # 模拟 §4 部分完成后重跑:新身份已装且启用、市场已切 shared、Codex 已收敛干净、
+    # Claude 仍残留旧 @xu-local + 未删 xu-local 市场。重跑只应收敛 Claude 残留,不碰 Codex。
+    dev,root=_setup(tmp_path, name="keil2clangd",
+                    platforms=("claude","codex"), enabled_tools=("claude","codex"))
+    src=str(root.resolve())
+    claude_mkts=[{"name":"keil2clangd","path":src},{"name":"xu-local","path":"C:/old/plugins-dev"}]
+    claude_inst=[
+        {"id":"keil2clangd@keil2clangd","version":"0.2.0","enabled":True,"installPath":src},
+        {"id":"keil2clangd@xu-local","version":"0.2.0","enabled":True,"installPath":"C:/old"},
+    ]
+    codex_mkts=[{"name":"keil2clangd","root":src}]  # codex 已切 shared、xu-local 已删
+    codex_inst=[{"pluginId":"keil2clangd@keil2clangd","version":"0.2.0","enabled":True,
+                 "marketplaceName":"keil2clangd","source":{"path":src}}]
+    plan=prepare_cutover(tmp_path,dev,runner=_runner(
+        codex_mkts=codex_mkts,codex_inst=codex_inst,claude_mkts=claude_mkts,claude_inst=claude_inst))
+    ids=_ids(plan)
+    # 新身份已就绪 → 不再 install/enable(两平台)
+    assert not any(i in ("keil2clangd:claude:install","keil2clangd:claude:enable",
+                         "keil2clangd:codex:add") for i in ids)
+    # Claude 只收敛:退役旧身份 + 删 xu-local 市场
+    assert "keil2clangd:claude:retire-old" in ids
+    assert "claude:retire-market:xu-local" in ids
+    retire=next(a for a in plan.actions if a.id=="keil2clangd:claude:retire-old")
+    assert retire.depends_on==()                    # 预检已 ready → 无虚假依赖,退役无条件可跑
+    # Codex 已完成 → 零动作,不被破坏
+    assert not any(i.startswith("keil2clangd:codex") or i.startswith("codex:") for i in ids)
+
 def test_cutover_requires_manifest(tmp_path):
     (tmp_path/"box").mkdir(parents=True)
     (tmp_path/"box/device.toml").write_text(
