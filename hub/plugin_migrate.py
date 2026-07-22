@@ -4,6 +4,10 @@ from pathlib import Path
 from hub.induction import prepare_induction, execute_induction
 from hub.snapshot import is_git_repo
 from hub.writer import Writer
+from hub.plugin_ops import (prepare_plugin_register, PluginAction, PluginPlan, _same_path,
+                            _plugin_source, _head_sha)
+from hub.plugin_manifest import load_plugin_manifest, plugin_version
+from hub.plugin_cli import CliCommand, installed_plugins, marketplaces
 
 # os 用于 lexists/realpath/commonpath 的容器与源目录 containment 预检。
 import os
@@ -184,3 +188,89 @@ def execute_migration(plan, vault_root, w: Writer) -> MigrationReport:
         except Exception as e:
             rep.failed.append((a.id, str(e))); break    # 强序列：失败即停（源已备份，见 T15）
     return rep
+
+def _drop_policy_actions(actions, name, tool):
+    drop={f"{name}:{tool}:enable",f"{name}:{tool}:disable"}
+    return [a for a in actions if a.id not in drop]
+
+def _cutover_reinstall(tool, name, desired, inst, dep, vault_root):
+    pid=f"{name}@{name}"; head=_head_sha(_plugin_source(vault_root,name))
+    version=plugin_version(vault_root,name); deps=(dep,) if dep else ()
+    if tool=="codex":
+        if not desired: return []              # register 的 remove 已收敛“不安装”策略
+        add=PluginAction(f"{name}:codex:cutover-reinstall",f"codex 换源后重装 {pid}",
+            depends_on=deps,cli=CliCommand("codex",["plugin","add",pid]))
+        state=PluginAction(f"{name}:codex:cutover-state",f"台账 {name}/codex",
+            depends_on=(add.id,),state=(name,"codex",head,version))
+        return [add,state]
+    uninstall=PluginAction(f"{name}:claude:cutover-uninstall",f"claude 换源前卸载 {pid}",
+        depends_on=deps,cli=CliCommand("claude",["plugin","uninstall",pid,"--keep-data","--scope","user"]))
+    install=PluginAction(f"{name}:claude:cutover-install",f"claude 从新源重装 {pid}",
+        depends_on=(uninstall.id,),cli=CliCommand("claude",["plugin","install",pid,"--scope","user"]))
+    verb="enable" if desired else "disable"
+    policy=PluginAction(f"{name}:claude:cutover-{verb}",f"claude 重装后{verb} {pid}",
+        depends_on=(install.id,),cli=CliCommand("claude",["plugin",verb,pid,"--scope","user"]))
+    state=PluginAction(f"{name}:claude:cutover-state",f"台账 {name}/claude",
+        depends_on=(policy.id,),state=(name,"claude",head,version))
+    return [uninstall,install,policy,state]
+
+def _ready_dep(actions, name, tool):
+    prefix=f"{name}:{tool}:"
+    preferred=("cutover-enable","cutover-reinstall","enable","add")
+    for verb in preferred:
+        found=[a.id for a in actions if a.id==prefix+verb]
+        if found: return found[-1]
+    return None
+
+def prepare_cutover(vault_root, dev, runner=None, old_market="xu-local") -> PluginPlan:
+    entries=load_plugin_manifest(vault_root)
+    if not entries:
+        raise MigrationInputError("shared/plugins/manifest.toml 为空或不存在，不能执行 cutover")
+    tools=sorted({tool for e in entries for tool in e.platforms})
+    snaps={tool:(installed_plugins(tool,runner=runner),marketplaces(tool,runner=runner))
+           for tool in tools}
+    reg=prepare_plugin_register(vault_root,dev,runner=runner)
+    actions=list(reg.actions)
+
+    # 同身份换源必须强制重装；单纯 marketplace add/remove 不会更新已装 cache。
+    for e in entries:
+        src=_plugin_source(vault_root,e.name); pid=f"{e.name}@{e.name}"
+        for tool in e.platforms:
+            installed,mkts=snaps[tool]
+            if pid not in installed or e.name not in mkts or _same_path(mkts[e.name],src):
+                continue
+            desired=e.name in dev.plugins.get(tool,[])
+            actions=_drop_policy_actions(actions,e.name,tool)
+            dep=f"{e.name}:{tool}:mktadd"
+            actions += _cutover_reinstall(tool,e.name,desired,installed[pid],dep,vault_root)
+
+    known={e.name for e in entries}
+    for tool in tools:
+        installed,mkts=snaps[tool]
+        old_ids=[pid for pid in installed if pid.endswith("@"+old_market)]
+        unknown=sorted(pid for pid in old_ids if pid.split("@",1)[0] not in known)
+        if unknown:
+            raise MigrationInputError(
+                f"{tool}: {old_market} 仍有 manifest 外已装身份 {unknown}，拒绝删除市场")
+        retired=[]
+        for oldpid in old_ids:
+            name=oldpid.split("@",1)[0]; desired=name in dev.plugins.get(tool,[])
+            dep=(_ready_dep(actions,name,tool)
+                 or (f"{name}:{tool}:mktadd"
+                     if any(a.id==f"{name}:{tool}:mktadd" for a in actions) else None))
+            newpid=f"{name}@{name}"
+            if desired and newpid not in installed and dep is None:
+                raise MigrationInputError(f"{tool}: {name} 新身份未规划成功，不能退役 {oldpid}")
+            argv=(["plugin","uninstall",oldpid,"--keep-data","--scope","user"] if tool=="claude"
+                  else ["plugin","remove",oldpid])
+            a=PluginAction(f"{name}:{tool}:retire-old",f"{tool} 退役旧身份 {oldpid}",
+                depends_on=((dep,) if dep else ()),cli=CliCommand(tool,argv))
+            actions.append(a); retired.append(a.id)
+        if old_market in mkts:
+            # 删除聚合市场依赖本平台此前所有新市场/新身份/旧身份动作；任一失败都必须 skip。
+            market_deps=tuple(dict.fromkeys(
+                [a.id for a in actions if f":{tool}:" in a.id] + retired))
+            actions.append(PluginAction(f"{tool}:retire-market:{old_market}",
+                f"{tool} 退役旧聚合市场 {old_market}",depends_on=market_deps,
+                cli=CliCommand(tool,["plugin","marketplace","remove",old_market])))
+    return PluginPlan(actions,reg.warnings)
