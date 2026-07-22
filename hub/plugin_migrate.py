@@ -1,7 +1,9 @@
-import json, subprocess, tomllib
-from dataclasses import dataclass
+import hashlib, json, shutil, stat, subprocess, tomllib
+from dataclasses import dataclass, field
 from pathlib import Path
+from hub.induction import prepare_induction, execute_induction
 from hub.snapshot import is_git_repo
+from hub.writer import Writer
 
 # os 用于 lexists/realpath/commonpath 的容器与源目录 containment 预检。
 import os
@@ -104,3 +106,81 @@ def prepare_migration(src_dir, vault_root, input_path) -> MigrationPlan:
                    "写 device 的 [plugins.*] 建议片段（作者审后并入 device.toml）",
                    dest=str(vault_root/"plugins-device-snippet.toml"), text=dev_lines))
     return MigrationPlan(actions, warnings, needs_author)
+
+@dataclass
+class MigrationReport:
+    done: list = field(default_factory=list)
+    failed: list = field(default_factory=list)
+
+def _file_sha256(path: Path) -> str:
+    h=hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda:f.read(1024*1024), b""): h.update(chunk)
+    return h.hexdigest()
+
+def _tree_manifest(root: Path) -> list:
+    """不跟随目录链接；比较相对路径、对象类型和文件内容/链接目标。"""
+    root=Path(root); rows=[]
+    for cur, dirs, files in os.walk(root, followlinks=False):
+        curp=Path(cur)
+        for name in sorted(dirs+files):
+            p=curp/name; rel=p.relative_to(root).as_posix()
+            if p.is_symlink(): rows.append((rel,"link",os.readlink(p)))
+            elif p.is_dir(): rows.append((rel,"dir",""))
+            else: rows.append((rel,"file",_file_sha256(p)))
+    return sorted(rows)
+
+def _onexc_writable(func, p, exc):
+    # git 在 Windows 上把 .git/objects 下的对象文件设为只读，裸 shutil.rmtree 删不动；
+    # 沿用 tests/hub/test_plugin_refresh.py 里已有的同款 chmod 后重试写法。
+    os.chmod(p, stat.S_IWRITE); func(p)
+
+def _clear_readonly(root: Path) -> None:
+    """删源前把整棵树改可写：同一个只读对象文件的问题会挡住 Writer.rmtree 里那句裸
+    shutil.rmtree（它是唯一写入口，不在这里改它的行为），所以删除前先在这一层解只读。"""
+    for cur, dirs, files in os.walk(root):
+        for name in dirs + files:
+            p = os.path.join(cur, name)
+            try: os.chmod(p, stat.S_IWRITE)
+            except OSError: pass
+    try: os.chmod(root, stat.S_IWRITE)
+    except OSError: pass
+
+def _do_move(src, dest, w: Writer):
+    src, dest = Path(src), Path(dest)
+    if w.dry_run:
+        print(f"  [dry-run] 复制 {src} → {dest} + 校验 + 删源"); return
+    if dest.exists():
+        raise MigrationInputError(f"目标已存在 {dest}，拒绝覆盖")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    before=_tree_manifest(src)
+    shutil.copytree(src, dest, symlinks=True)       # 含 .git；保留链接；跨盘安全
+    if before != _tree_manifest(dest):
+        try: shutil.rmtree(dest, onexc=_onexc_writable)   # 尽力清掉坏副本
+        except OSError: pass
+        raise MigrationInputError(f"{src}→{dest} 复制校验失败（路径/类型/SHA-256 不同）")
+    _clear_readonly(src)
+    w.rmtree(src)
+
+def execute_migration(plan, vault_root, w: Writer) -> MigrationReport:
+    rep = MigrationReport()
+    if plan.needs_author:
+        rep.failed.append(("preflight:needs-author",
+                           "缺 market-of-one: " + ", ".join(sorted(plan.needs_author))))
+        return rep
+    done=set()
+    for a in plan.actions:
+        missing=[d for d in a.depends_on if d not in done]
+        if missing:
+            rep.failed.append((a.id,"未满足依赖: " + ", ".join(missing))); break
+        try:
+            if a.kind == "move":
+                _do_move(a.src, a.dest, w)
+            elif a.kind == "induct":
+                execute_induction(prepare_induction(vault_root, a.dest), vault_root, w)
+            elif a.kind == "write":
+                w.write_text_atomic(Path(a.dest), a.text)
+            rep.done.append(a.id); done.add(a.id)
+        except Exception as e:
+            rep.failed.append((a.id, str(e))); break    # 强序列：失败即停（源已备份，见 T15）
+    return rep
