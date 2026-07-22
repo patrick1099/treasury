@@ -33,7 +33,7 @@ from hub.plugin_manifest import PluginManifestError, PluginIdentityError
 from hub.plugin_cli import CliUnavailable
 from hub.vault import UnsupportedVaultVersion
 from hub.plugin_migrate import (prepare_migration, execute_migration, prepare_cutover,
-                                MigrationInputError)
+                                prepare_retire, execute_retire, MigrationInputError)
 from hub.induction import recover_pending, InductionError
 
 def _lint(vault, exempt: set[str]) -> list[str]:
@@ -305,6 +305,31 @@ def _cmd_cutover_plugins(args) -> int:
         print(f"  ✗ {aid}: {why}")
     return 0 if not rep.failed else 1
 
+def _cmd_retire_plugin_sources(args) -> int:
+    # 三段式 phase3：平台切换成功且验证后，才删除迁移输入声明的旧子仓。
+    # 任一预检失败→零删除；只删声明的子仓，不碰外层容器。dry-run 与真跑共用 planner/executor。
+    w = Writer(dry_run=args.dry_run)
+    try:
+        vault = Path(args.vault); dev = load_device(vault, args.host or current_host())
+        plan = prepare_retire(Path(args.src), vault, Path(args.input), dev,
+                              old_market=args.old_market)
+        rep = execute_retire(plan, w)
+    except (MigrationInputError, CliUnavailable, UnsupportedVaultVersion,
+            FileNotFoundError, OSError) as e:
+        print(e); return 1
+    if rep.blocked:
+        print("退役被拒（零删除）——先解决以下活动引用：")
+        for b in rep.blocked:
+            print(f"  ✗ {b}")
+        return 1
+    if not plan.actions:
+        print("没有待退役的旧源（已删或未声明）。")
+        return 0
+    verb = "预计删除" if args.dry_run else "已删除"
+    for a in plan.actions:
+        print(f"  {verb} {a.target}")
+    return 0
+
 def _cmd_sync(args) -> int:
     vault_root = Path(args.vault)
     b = GitBackend(vault_root)
@@ -401,6 +426,13 @@ def build_parser() -> argparse.ArgumentParser:
     cp.add_argument("--old-market", default="xu-local")
     cp.add_argument("--dry-run", action="store_true")
     cp.set_defaults(func=_cmd_cutover_plugins)
+
+    rp = sub.add_parser("retire-plugin-sources", parents=[common])
+    rp.add_argument("--src", required=True, help="旧插件仓容器目录（如 ~/.claude/plugins-dev）")
+    rp.add_argument("--input", required=True, help="迁移输入（声明要退役哪些子仓）")
+    rp.add_argument("--old-market", default="xu-local")
+    rp.add_argument("--dry-run", action="store_true")
+    rp.set_defaults(func=_cmd_retire_plugin_sources)
 
     mr = sub.add_parser("memory-read")
     mr.add_argument("--vault", default=None)

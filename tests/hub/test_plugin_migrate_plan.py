@@ -24,14 +24,14 @@ def test_prepare_is_pure(tmp_path):
         '[tn]\nplatforms=["claude"]\nenabled=[]\n', encoding="utf-8")
     plan=prepare_migration(src, tmp_path, inp)
     kinds=[(a.kind,a.id) for a in plan.actions]
-    assert ("move","cjt:move") in kinds and ("induct","cjt:induct") in kinds
+    assert ("copy","cjt:copy") in kinds and ("induct","cjt:induct") in kinds   # 三段式:copy 不删源
     assert any(a.kind=="write" and "manifest" in a.id for a in plan.actions)
     assert "tn" in plan.needs_author                       # 缺 market-of-one → 标注
     # 纯：源仍在、目标未建
     assert (src/"cjt/.git").exists() and not (tmp_path/"shared/plugins/cjt").exists()
-    # induct 依赖 move
+    # induct 依赖 copy
     ind=[a for a in plan.actions if a.id=="cjt:induct"][0]
-    assert "cjt:move" in ind.depends_on
+    assert "cjt:copy" in ind.depends_on
 
 def test_missing_platforms_raises(tmp_path):
     src=tmp_path/"plugins-dev"; _repo(src,"cjt")
@@ -53,6 +53,6 @@ def test_prepare_rerun_accepts_repo_already_moved(tmp_path):
     inp=tmp_path/"m.toml"; inp.write_text(
         '[cjt]\nplatforms=["claude"]\nenabled=[]\n',encoding="utf-8")
     plan=prepare_migration(src,tmp_path,inp)
-    assert not any(a.id=="cjt:move" for a in plan.actions)
-    assert any(a.id=="cjt:induct" for a in plan.actions)  # move 已完成但父仓未 add → 重跑从 induct 收敛
+    assert not any(a.id=="cjt:copy" for a in plan.actions)
+    assert any(a.id=="cjt:induct" for a in plan.actions)  # copy 已完成但父仓未 add → 重跑从 induct 收敛
     assert any(a.id=="write:manifest" for a in plan.actions)

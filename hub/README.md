@@ -214,8 +214,10 @@ memory 走一条与 skill 不同的路:**skill 活链、memory 走上行收集 +
 - `hub register --vault <v> --host <h>`：注册全部适配市场，并按 device 允许列表收敛安装/启用状态。
 - `hub refresh --vault <v> --host <h>`：只刷新已经安装且已显式 bump+commit 的插件；不替用户改版本或源码仓。
 - `hub status --vault <v> --host <h> --check`：只读检查 source、启用态、仓状态和本机刷新基线。
-- `hub migrate-plugins ...` / `hub cutover-plugins ...`：仅用于一次性迁移；严格按
-  `docs/runbooks/2026-07-hub-plugin-cutover.md` 的人工检查点执行。
+- `hub migrate-plugins ...`（phase1）/ `hub cutover-plugins ...`（phase2）/
+  `hub retire-plugin-sources ...`（phase3）：一次性迁移的三段式。phase1 只复制+induct **绝不删源**；
+  phase2 只官方 CLI 平台切换；phase3 平台切换验证通过后才退役旧源（全量预检，任一旧引用/新身份未就位→零删除）。
+  严格按 `docs/runbooks/2026-07-hub-plugin-cutover.md` 的三个人工检查点执行。
 
 平台 marketplace、安装、启用和卸载全部通过 Claude/Codex 官方 CLI；hub 不直接修改平台 cache、
 installed_plugins.json、known_marketplaces.json 或 Codex config.toml。本机刷新基线保存在
