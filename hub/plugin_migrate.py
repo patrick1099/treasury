@@ -5,9 +5,9 @@ from hub.induction import prepare_induction, execute_induction
 from hub.snapshot import is_git_repo
 from hub.writer import Writer
 from hub.plugin_ops import (prepare_plugin_register, PluginAction, PluginPlan, _same_path,
-                            _plugin_source, _head_sha)
+                            _plugin_source, _head_sha, _norm)
 from hub.plugin_manifest import load_plugin_manifest, plugin_version
-from hub.plugin_cli import CliCommand, installed_plugins, marketplaces
+from hub.plugin_cli import CliCommand, installed_plugins, marketplaces, CliUnavailable
 
 # os 用于 lexists/realpath/commonpath 的容器与源目录 containment 预检。
 import os
@@ -76,29 +76,48 @@ def prepare_migration(src_dir, vault_root, input_path) -> MigrationPlan:
             f"迁移输入与源/目标仓集合不一致：未声明={sorted(known-set(inp))}，不存在={sorted(set(inp)-known)}")
     actions, warnings, needs_author = [], [], []
     mf_lines, enabled_by_tool = [], {}
+    def _valid_repo(active, base) -> bool:
+        real=active.resolve()
+        return not (active.is_symlink() or not active.is_dir() or not is_git_repo(active)
+                    or os.path.commonpath([str(real),str(base)]) != str(base))
+    def _induct_only(name, rel):
+        # dest 已在:只确保 induct(幂等);父仓已是 gitlink 则拒绝
+        modes=_index_modes(vault_root,rel)
+        if "160000" in modes:
+            raise MigrationInputError(f"{name}: 父仓 index 仍是 gitlink，拒绝继续")
+        if modes:                                 # 已跟踪:仍 induct 一次以幂等收敛(git add no-op)
+            actions.append(MigrationAction(f"{name}:induct","induct",f"induct {name}(幂等)",dest=rel))
+        else:                                     # 上次只 copy 未 induct;本次从 induction 继续
+            actions.append(MigrationAction(f"{name}:induct","induct",f"induct {name}",dest=rel))
     for name, spec in inp.items():
         s=src_dir/name; rel=f"shared/plugins/{name}"; dest=vault_root/rel
         in_src=name in src_names; in_dest=name in dest_names
         if in_src and in_dest:
-            raise MigrationInputError(f"{name}: plugins-dev 与 shared/plugins 同时存在，需人工裁决")
-        active=s if in_src else dest
-        base=src_real if in_src else dest_root.resolve()
-        real=active.resolve()
-        if (active.is_symlink() or not active.is_dir() or not is_git_repo(active)
-                or os.path.commonpath([str(real),str(base)]) != str(base)):
-            raise MigrationInputError(f"{name}: 当前仓不是预期容器内真实 git 目录")
-        if not _market_ready(active, name):
-            needs_author.append(name)
-        if in_src:
-            mv=MigrationAction(f"{name}:move","move",f"复制 {name} → {rel}",src=str(s),dest=str(dest))
-            actions += [mv,MigrationAction(f"{name}:induct","induct",f"induct {name}",
-                                           dest=rel,depends_on=(mv.id,))]
-        else:
-            modes=_index_modes(vault_root,rel)
-            if "160000" in modes:
-                raise MigrationInputError(f"{name}: 父仓 index 仍是 gitlink，拒绝继续")
-            if not modes:                         # 上次只完成 copy+删源；本次从 induction 继续
-                actions.append(MigrationAction(f"{name}:induct","induct",f"induct {name}",dest=rel))
+            # 三段式:phase1 不删源 → src+dest 共存是重跑常态。内容+身份一致→幂等(只 induct);
+            # 不同→冲突失败、零删除(缺陷 dcea199 边界 2)。
+            if not _valid_repo(s, src_real) or not _valid_repo(dest, dest_root.resolve()):
+                raise MigrationInputError(f"{name}: 当前仓不是预期容器内真实 git 目录")
+            if not _same_repo(s, dest):
+                raise MigrationInputError(
+                    f"{name}: plugins-dev 与 shared/plugins 两份内容/Git 身份不一致，冲突拒绝（零删除）")
+            if not _market_ready(dest, name):
+                needs_author.append(name)
+            _induct_only(name, rel)
+        elif in_src:
+            if not _valid_repo(s, src_real):
+                raise MigrationInputError(f"{name}: 当前仓不是预期容器内真实 git 目录")
+            if not _market_ready(s, name):
+                needs_author.append(name)
+            cp=MigrationAction(f"{name}:copy","copy",f"复制 {name} → {rel}（保留旧源）",
+                               src=str(s),dest=str(dest))
+            actions += [cp,MigrationAction(f"{name}:induct","induct",f"induct {name}",
+                                           dest=rel,depends_on=(cp.id,))]
+        else:                                     # not in_src and in_dest
+            if not _valid_repo(dest, dest_root.resolve()):
+                raise MigrationInputError(f"{name}: 当前仓不是预期容器内真实 git 目录")
+            if not _market_ready(dest, name):
+                needs_author.append(name)
+            _induct_only(name, rel)
         mf_lines.append(f"[{name}]\nplatforms = {_q(spec['platforms'])}\n")
         for tool in spec["enabled"]:
             enabled_by_tool.setdefault(tool, []).append(name)
@@ -122,10 +141,13 @@ def _file_sha256(path: Path) -> str:
         for chunk in iter(lambda:f.read(1024*1024), b""): h.update(chunk)
     return h.hexdigest()
 
-def _tree_manifest(root: Path) -> list:
-    """不跟随目录链接；比较相对路径、对象类型和文件内容/链接目标。"""
+def _tree_manifest(root: Path, prune_git: bool=False) -> list:
+    """不跟随目录链接；比较相对路径、对象类型和文件内容/链接目标。
+    prune_git=True 时跳过整个 .git 子树（内容比对用，别去 SHA 整座对象库）。"""
     root=Path(root); rows=[]
     for cur, dirs, files in os.walk(root, followlinks=False):
+        if prune_git and ".git" in dirs:
+            dirs.remove(".git")              # 不下降、也不记这一行
         curp=Path(cur)
         for name in sorted(dirs+files):
             p=curp/name; rel=p.relative_to(root).as_posix()
@@ -133,6 +155,31 @@ def _tree_manifest(root: Path) -> list:
             elif p.is_dir(): rows.append((rel,"dir",""))
             else: rows.append((rel,"file",_file_sha256(p)))
     return sorted(rows)
+
+def _git_out(cwd, *a):
+    r=subprocess.run(["git","-C",str(cwd),*a], capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode==0 else None
+
+def _content_manifest_no_git(root: Path) -> list:
+    return _tree_manifest(root, prune_git=True)
+
+def _same_repo(a: Path, b: Path) -> bool:
+    """两份是否内容+Git 身份一致(phase1 重跑幂等判据)。
+    身份=HEAD sha + origin remote 都一致(两边都无 remote 也算一致);内容=去 .git 的树清单一致。
+    任一不同即视为漂移 → 调用方冲突拒绝、零删除。
+    注:未出生 HEAD(无提交)时 rev-parse 失败→_git_out 返 None→按漂移拒绝(安全方向;
+    真实插件仓总有提交,不会走到这)。"""
+    ha, hb = _git_out(a,"rev-parse","HEAD"), _git_out(b,"rev-parse","HEAD")
+    if ha is None or hb is None or ha != hb:
+        return False
+    if _git_out(a,"remote","get-url","origin") != _git_out(b,"remote","get-url","origin"):
+        return False
+    return _content_manifest_no_git(a) == _content_manifest_no_git(b)
+
+def _under(path: str, base: Path) -> bool:
+    if not path: return False
+    p=_norm(path); b=_norm(str(base))            # _norm 用 normpath → 原生分隔符,拼 os.sep
+    return p==b or p.startswith(b + os.sep)
 
 def _onexc_writable(func, p, exc):
     # git 在 Windows 上把 .git/objects 下的对象文件设为只读，裸 shutil.rmtree 删不动；
@@ -150,10 +197,12 @@ def _clear_readonly(root: Path) -> None:
     try: os.chmod(root, stat.S_IWRITE)
     except OSError: pass
 
-def _do_move(src, dest, w: Writer):
+def _do_copy(src, dest, w: Writer):
+    # 三段式 phase1：只复制 + 校验，**绝不删源**。旧源退役由 phase3
+    # retire-plugin-sources 在平台切换成功后显式做（缺陷 dcea199：切指向前不删旧市场根）。
     src, dest = Path(src), Path(dest)
     if w.dry_run:
-        print(f"  [dry-run] 复制 {src} → {dest} + 校验 + 删源"); return
+        print(f"  [dry-run] 复制 {src} → {dest} + 校验（保留旧源）"); return
     if dest.exists():
         raise MigrationInputError(f"目标已存在 {dest}，拒绝覆盖")
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -163,8 +212,6 @@ def _do_move(src, dest, w: Writer):
         try: shutil.rmtree(dest, onexc=_onexc_writable)   # 尽力清掉坏副本
         except OSError: pass
         raise MigrationInputError(f"{src}→{dest} 复制校验失败（路径/类型/SHA-256 不同）")
-    _clear_readonly(src)
-    w.rmtree(src)
 
 def execute_migration(plan, vault_root, w: Writer) -> MigrationReport:
     rep = MigrationReport()
@@ -178,15 +225,88 @@ def execute_migration(plan, vault_root, w: Writer) -> MigrationReport:
         if missing:
             rep.failed.append((a.id,"未满足依赖: " + ", ".join(missing))); break
         try:
-            if a.kind == "move":
-                _do_move(a.src, a.dest, w)
+            if a.kind == "copy":
+                _do_copy(a.src, a.dest, w)
             elif a.kind == "induct":
                 execute_induction(prepare_induction(vault_root, a.dest), vault_root, w)
             elif a.kind == "write":
                 w.write_text_atomic(Path(a.dest), a.text)
             rep.done.append(a.id); done.add(a.id)
         except Exception as e:
-            rep.failed.append((a.id, str(e))); break    # 强序列：失败即停（源已备份，见 T15）
+            rep.failed.append((a.id, str(e))); break    # 强序列：失败即停（phase1 从不删源，旧源完好）
+    return rep
+
+# ── phase3：退役旧源(retire-plugin-sources) ────────────────────────────────
+# 三段式的第三阶段：平台已通过官方 CLI 切到 shared 且验证成功后，才删除迁移输入声明的旧子仓。
+# 全量预检两平台已无旧 marketplace/source/身份引用、新身份均装且启用策略正确；任一失败→零删除。
+# 只删声明的旧子仓 src_dir/<name>，绝不删外层容器及其独有文档。dry-run 与真跑共用此 planner/executor。
+
+@dataclass
+class RetireAction:
+    id: str; describe: str; target: str
+
+@dataclass
+class RetirePlan:
+    actions: list; blocks: list
+
+@dataclass
+class RetireReport:
+    done: list = field(default_factory=list)
+    blocked: list = field(default_factory=list)
+
+def prepare_retire(src_dir, vault_root, input_path, dev, runner=None,
+                   old_market="xu-local") -> RetirePlan:
+    src_dir=Path(src_dir)
+    inp=load_migration_input(input_path)
+    tools=sorted({t for spec in inp.values() for t in spec["platforms"]})
+    blocks=[]
+    snap={}
+    for tool in tools:                            # 只走官方 CLI 读实时态,绝不读 config 猜
+        try:
+            snap[tool]=(installed_plugins(tool,runner=runner), marketplaces(tool,runner=runner))
+        except CliUnavailable as e:               # 读不到(如 Codex 悬空市场硬失败)→不敢删
+            blocks.append(f"{tool}: 平台状态不可读，拒绝退役（{e}）")
+    if blocks:
+        return RetirePlan([], blocks)
+    for tool in tools:
+        installed, mkts = snap[tool]
+        if old_market in mkts:
+            blocks.append(f"{tool}: 旧聚合市场 {old_market} 仍注册")
+        for mname, mpath in mkts.items():
+            if _under(mpath, src_dir):
+                blocks.append(f"{tool}: 市场 {mname} 仍指向旧源目录（{mpath}）")
+        for pid, inst in installed.items():
+            if pid.endswith("@"+old_market):
+                blocks.append(f"{tool}: 旧身份 {pid} 仍安装")
+            if inst.source_path and _under(inst.source_path, src_dir):
+                blocks.append(f"{tool}: {pid} 来源仍在旧源目录（{inst.source_path}）")
+    for name, spec in inp.items():                # 新身份均装且启用策略正确
+        pid=f"{name}@{name}"
+        for tool in spec["platforms"]:
+            installed,_=snap[tool]
+            desired=name in dev.plugins.get(tool, [])
+            present=pid in installed
+            active=present and (installed[pid].enabled if tool=="claude" else True)
+            if desired and not active:
+                blocks.append(f"{tool}: 新身份 {pid} 未按期望安装/启用，退役被拒")
+            if not desired and present:
+                blocks.append(f"{tool}: {pid} 应禁用/不装但仍在，退役被拒")
+    if blocks:
+        return RetirePlan([], blocks)
+    actions=[RetireAction(f"{name}:retire-src", f"删除旧源 {src_dir/name}", str(src_dir/name))
+             for name in inp if (src_dir/name).exists()]   # 已删则跳过(幂等)
+    return RetirePlan(actions, [])
+
+def execute_retire(plan: RetirePlan, w: Writer) -> RetireReport:
+    rep=RetireReport()
+    if plan.blocks:                               # 任一预检失败→零删除
+        rep.blocked=list(plan.blocks); return rep
+    for a in plan.actions:
+        tgt=Path(a.target)
+        if not w.dry_run:
+            _clear_readonly(tgt)                  # Windows 只读 .git 对象,删前解只读(dry 不碰)
+        w.rmtree(tgt)                             # dry-run 安全:打印+零写
+        rep.done.append(a.id)
     return rep
 
 def _drop_policy_actions(actions, name, tool):

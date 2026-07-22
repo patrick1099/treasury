@@ -1,9 +1,23 @@
 # 缺陷（必须修）：迁移顺序在平台改指向前删除仍被引用的市场根
 
-- 状态：**OPEN — 必须修**
+- 状态：**FIXED（2026-07-22，三段式迁移已实现，TDD + 独立 review + 全量回归）**
 - 发现：2026-07-22，Plan 3（`docs/plans/2026-07-20-hub-c-plugin-register.md`）T15 真机 cutover §4 起手
 - 严重度：High —— 会让 Codex 插件子系统在 §3 与 §4 之间整体瘫痪（不止被迁插件，所有已装 Codex 插件一起不可用）
-- 本机现状：已用**临时 junction 兼容桥**恢复，未做真实 cutover；桥的退役条件见文末
+- 本机现状：已用**临时 junction 兼容桥**恢复并完成 cutover，桥已安全移除（历史记录见文末）
+
+## 修复摘要（2026-07-22）
+
+三段式迁移落地，切指向前绝不删旧市场根：
+1. **`migrate-plugins`(phase1)**：`_do_move`→`_do_copy`——只 copy+校验+induct，**绝不删源**。
+   重跑允许 src+dest 共存：`_same_repo`(HEAD+remote+去 .git 内容清单)一致→幂等只 induct；不同→冲突拒绝、零删除。
+2. **`cutover-plugins`(phase2)**：只官方 CLI 平台切换，不删文件源（行为不变）。
+3. **`retire-plugin-sources`(phase3，新命令)**：`prepare_retire`/`execute_retire`——全量预检两平台已无旧
+   marketplace/source/身份引用（读不到平台状态也拒绝）+ 新身份均装且启用策略正确；任一失败→零删除；
+   只删迁移输入声明的 `src_dir/<name>`，不碰外层容器及独有 docs；`--dry-run` 与真跑共用 planner/executor，删除前保留人工闸。
+
+回归测试见 `tests/hub/test_plugin_retire.py`（含 Codex 悬空市场→读不到→零删除、Claude 容忍/Codex 不容忍差异 fixture）
+与 `test_plugin_migrate_exec.py`（phase1 保源、重跑幂等、内容漂移拒绝、Codex 旧市场根 cutover 前始终可读）。
+runbook §3/§6/§7（phase3 退役在 §6，回滚顺延 §7）、spec P8、hub/README CLI 帮助已同步。**下方原始分析保留作历史。**
 
 ## 现象
 

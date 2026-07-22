@@ -15,19 +15,59 @@ def _repo(src, name):
     _git(d,"config","user.email","t@t"); _git(d,"config","user.name","t"); _git(d,"add","-A"); _git(d,"commit","-qm","c")
 def _idx(p, rel): return subprocess.run(["git","-C",str(p),"ls-files","-s",rel], capture_output=True, text=True).stdout
 
-def test_execute_moves_inducts(tmp_path):
-    src=tmp_path/"plugins-dev"; _repo(src,"cjt")
+def _vault(tmp_path):
     v=tmp_path/"vault"; v.mkdir(); (v/"vault.toml").write_text("version = 3\n", encoding="utf-8")
     subprocess.run(["git","init","-q",str(v)], check=True)
     _git(v,"config","user.email","t@t"); _git(v,"config","user.name","t")
+    return v
+
+def test_execute_copies_keeps_source_and_inducts(tmp_path):
+    # 三段式 phase1:只复制+induct,绝不删源。旧源保留,Codex 的旧市场根不悬空。
+    src=tmp_path/"plugins-dev"; _repo(src,"cjt")
+    v=_vault(tmp_path)
     inp=tmp_path/"m.toml"; inp.write_text('[cjt]\nplatforms=["claude"]\nenabled=["claude"]\n', encoding="utf-8")
-    plan=prepare_migration(src, v, inp)
-    rep=execute_migration(plan, v, Writer())
+    rep=execute_migration(prepare_migration(src, v, inp), v, Writer())
     assert not rep.failed
-    assert not (src/"cjt").exists()                          # 源已删
+    assert (src/"cjt/.git").exists()                         # 源**保留**(不再删)
     assert (v/"shared/plugins/cjt/.git").exists()            # 嵌套仓在
     assert "160000" not in _idx(v,"shared/plugins/cjt")      # 父仓跟踪文件非 gitlink
     assert (v/"shared/plugins/manifest.toml").read_text(encoding="utf-8").strip().startswith("[cjt]")
+
+def test_phase1_rerun_is_idempotent(tmp_path):
+    # src+dest 共存(phase1 不删源后的常态):内容+身份一致→幂等,不报错、不重删。
+    src=tmp_path/"plugins-dev"; _repo(src,"cjt")
+    v=_vault(tmp_path)
+    inp=tmp_path/"m.toml"; inp.write_text('[cjt]\nplatforms=["claude"]\nenabled=["claude"]\n', encoding="utf-8")
+    execute_migration(prepare_migration(src, v, inp), v, Writer())
+    rep2=execute_migration(prepare_migration(src, v, inp), v, Writer())   # 重跑
+    assert not rep2.failed
+    assert (src/"cjt/.git").exists() and (v/"shared/plugins/cjt/.git").exists()
+    assert "160000" not in _idx(v,"shared/plugins/cjt")
+
+def test_phase1_content_drift_refuses_zero_delete(tmp_path):
+    # src 与 dest 内容/身份漂移→冲突失败、零删除。
+    src=tmp_path/"plugins-dev"; _repo(src,"cjt")
+    v=_vault(tmp_path)
+    inp=tmp_path/"m.toml"; inp.write_text('[cjt]\nplatforms=["claude"]\nenabled=["claude"]\n', encoding="utf-8")
+    execute_migration(prepare_migration(src, v, inp), v, Writer())
+    # 让 dest 漂移:加一个提交,HEAD 与 src 不再一致
+    d=v/"shared/plugins/cjt"; (d/"drift.txt").write_text("x\n", encoding="utf-8")
+    _git(d,"add","-A"); _git(d,"commit","-qm","drift")
+    import pytest
+    from hub.plugin_migrate import MigrationInputError
+    with pytest.raises(MigrationInputError):
+        prepare_migration(src, v, inp)
+    assert (src/"cjt/.git").exists() and (d/".git").exists()   # 两份都在,零删除
+
+def test_codex_old_market_root_readable_after_phase1(tmp_path):
+    # phase1 后旧源仍是合法 market-of-one 根 → cutover 前 Codex 始终能读它,不悬空。
+    src=tmp_path/"plugins-dev"; _repo(src,"cjt")
+    v=_vault(tmp_path)
+    inp=tmp_path/"m.toml"; inp.write_text('[cjt]\nplatforms=["codex"]\nenabled=["codex"]\n', encoding="utf-8")
+    execute_migration(prepare_migration(src, v, inp), v, Writer())
+    from hub.plugin_migrate import _market_ready
+    assert (src/"cjt/.claude-plugin/marketplace.json").exists()
+    assert _market_ready(src/"cjt", "cjt")                    # 旧市场根仍有效
 
 def test_dry_run_moves_nothing(tmp_path):
     src=tmp_path/"plugins-dev"; _repo(src,"cjt")
