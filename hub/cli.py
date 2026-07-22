@@ -1,4 +1,5 @@
 import argparse
+import subprocess
 import sys
 from pathlib import Path
 from hub.vault import load_vault, load_device, current_host
@@ -31,6 +32,9 @@ from hub.plugin_ops import (prepare_plugin_register, prepare_plugin_refresh, exe
 from hub.plugin_manifest import PluginManifestError, PluginIdentityError
 from hub.plugin_cli import CliUnavailable
 from hub.vault import UnsupportedVaultVersion
+from hub.plugin_migrate import (prepare_migration, execute_migration, prepare_cutover,
+                                MigrationInputError)
+from hub.induction import recover_pending, InductionError
 
 def _lint(vault, exempt: set[str]) -> list[str]:
     errs = []
@@ -270,6 +274,37 @@ def _cmd_migrate_schema(args) -> int:
     print(f"{'预计升到' if args.dry_run else '已升到'} version {args.to}")
     return 0
 
+def _cmd_migrate_plugins(args) -> int:
+    w = Writer(dry_run=args.dry_run)
+    try:
+        vault = Path(args.vault)
+        if not w.dry_run:
+            recover_pending(vault, w)      # C4：先恢复上次崩在".git 已移出"的事务，再做新 prepare
+        plan = prepare_migration(Path(args.src), vault, Path(args.input))
+        rep = execute_migration(plan, vault, w)
+    except (MigrationInputError, InductionError, OSError, ValueError,
+            subprocess.CalledProcessError) as e:
+        print(e); return 1
+    for warning in plan.warnings:
+        print("  ⚠", warning)
+    for aid, why in rep.failed:
+        print(f"  ✗ {aid}: {why}")
+    return 0 if not rep.failed else 1
+
+def _cmd_cutover_plugins(args) -> int:
+    w = Writer(dry_run=args.dry_run)
+    try:
+        vault = Path(args.vault); dev = load_device(vault, args.host or current_host())
+        plan = prepare_cutover(vault, dev, old_market=args.old_market)
+        rep = execute_plugin_plan(plan, w)
+    except (MigrationInputError, PluginManifestError, PluginIdentityError,
+            PluginContainmentError, PluginRepoUnavailable, CliUnavailable,
+            UnsupportedVaultVersion, FileNotFoundError) as e:
+        print(e); return 1
+    for aid, why in rep.failed:
+        print(f"  ✗ {aid}: {why}")
+    return 0 if not rep.failed else 1
+
 def _cmd_sync(args) -> int:
     vault_root = Path(args.vault)
     b = GitBackend(vault_root)
@@ -355,6 +390,17 @@ def build_parser() -> argparse.ArgumentParser:
     mig.add_argument("--to", type=int, required=True)
     mig.add_argument("--dry-run", action="store_true")
     mig.set_defaults(func=_cmd_migrate_schema)
+
+    mp = sub.add_parser("migrate-plugins", parents=[common])
+    mp.add_argument("--src", required=True)
+    mp.add_argument("--input", required=True)
+    mp.add_argument("--dry-run", action="store_true")
+    mp.set_defaults(func=_cmd_migrate_plugins)
+
+    cp = sub.add_parser("cutover-plugins", parents=[common])
+    cp.add_argument("--old-market", default="xu-local")
+    cp.add_argument("--dry-run", action="store_true")
+    cp.set_defaults(func=_cmd_cutover_plugins)
 
     mr = sub.add_parser("memory-read")
     mr.add_argument("--vault", default=None)
