@@ -200,3 +200,23 @@ memory 走一条与 skill 不同的路:**skill 活链、memory 走上行收集 +
 **sync 不越界、refresh 显式**:`sync`(A)只碰金库本身(pull/lint/derive/commit/push),**绝不**
 顺手重算这些视图/受管块/opencode 条目;`shared/` 变化后要看到效果,必须显式跑 `hub refresh`,
 或用 `sync --refresh` 串联(成功后调 `refresh` 并传播其返回码)。
+
+---
+
+## 插件：shared 活源 + market-of-one
+
+自有插件的稳态活源位于 `<vault>/shared/plugins/<name>/`；每个插件继续保留自己的 `.git`、remote 和提交历史，
+父金库同时跟踪除嵌套 `.git` 外的源码文件。`~/.claude/plugins-dev` 只是一轮迁移输入，cutover 完成后不再是活源。
+
+每个插件自带 market-of-one，稳定身份为 `<name>@<name>`。`shared/plugins/manifest.toml` 声明插件及适配平台；
+`<host>/device.toml` 的 `[plugins.claude].enabled` / `[plugins.codex].enabled` 是本机分平台允许列表。
+
+- `hub register --vault <v> --host <h>`：注册全部适配市场，并按 device 允许列表收敛安装/启用状态。
+- `hub refresh --vault <v> --host <h>`：只刷新已经安装且已显式 bump+commit 的插件；不替用户改版本或源码仓。
+- `hub status --vault <v> --host <h> --check`：只读检查 source、启用态、仓状态和本机刷新基线。
+- `hub migrate-plugins ...` / `hub cutover-plugins ...`：仅用于一次性迁移；严格按
+  `docs/runbooks/2026-07-hub-plugin-cutover.md` 的人工检查点执行。
+
+平台 marketplace、安装、启用和卸载全部通过 Claude/Codex 官方 CLI；hub 不直接修改平台 cache、
+installed_plugins.json、known_marketplaces.json 或 Codex config.toml。本机刷新基线保存在
+`~/.hub/plugin-state.toml`，它是运行态，不进金库。
