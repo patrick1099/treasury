@@ -86,6 +86,23 @@ def test_schema_md_does_not_repeat_the_false_claims(tmp_path):
     assert "原样带着走" in s
     assert "originSessionId" in s
 
+def test_scaffolded_device_toml_has_no_legacy_plugin_repos(tmp_path):
+    """v5 起自有插件活源在 shared/plugins,不再把 plugins-dev 当 collect 外部源。
+    新机 scaffold 的 device.toml **不许**再生成遗留的 plugin_repos——否则退役 plugins-dev
+    后 hub collect 的源预校验会在缺失路径上跪掉。"""
+    scaffold(tmp_path, "box1", Writer())
+    raw = tomllib.loads((tmp_path / "box1" / "device.toml").read_text(encoding="utf-8"))
+    assert "plugin_repos" not in raw["sources"]["claude"]
+    dev = load_device(tmp_path, "box1")
+    assert dev.sources["claude"].plugin_repos is None      # 遗留字段可选,缺省即 None
+
+def test_schema_md_frames_plugin_repos_as_legacy(tmp_path):
+    """SCHEMA 的 device.toml 示例不再把 plugin_repos 当推荐字段;若提到它,必须标明是
+    v4 及更早的遗留字段、v5 插件活源在 shared/plugins。避免 C 阶段/新机照抄。"""
+    scaffold(tmp_path, "box1", Writer())
+    s = (tmp_path / "SCHEMA.md").read_text(encoding="utf-8")
+    assert "遗留字段" in s and "shared/plugins" in s
+
 def test_dry_run_creates_nothing(tmp_path):
     scaffold(tmp_path, "box1", Writer(dry_run=True))
     # 断言到"一个条目都没有"这一层：只查 vault.toml 的话，scaffold 里偷摸加一句

@@ -19,7 +19,9 @@ CODEX_HOME = "<~/.codex 的绝对路径>"
 [sources.claude]
 memory = ["<~/.claude/projects/<工程编码>/memory>"]
 skills = "<~/.claude/skills>"
-plugin_repos = "<~/.claude/plugins-dev>"   # 自己写的插件仓所在目录
+# 注:不再有 plugin_repos。v5 起自有插件活源在金库 shared/plugins/(清单权威在
+# shared/plugins/manifest.toml),不再把 plugins-dev 当 collect 外部源。plugin_repos
+# 是 v4 及更早的遗留字段,新机不配置;仅历史金库迁移时才可能读到。
 settings = "<~/.claude/settings.json>"
 agents = "<~/.claude/CLAUDE.md>"
 

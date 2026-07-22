@@ -179,9 +179,11 @@ CODEX_HOME = "C:/Users/x/.codex"
 [sources.claude]              # 提取器去哪儿收东西。缺项 = 本机没那个源,不是错误
 memory = ["C:/Users/x/.claude/projects/<工程编码>/memory"]   # 可以多个
 skills = "C:/Users/x/.claude/skills"
-plugin_repos = "C:/Users/x/.claude/plugins-dev"   # 自己写的插件仓所在目录
 settings = "C:/Users/x/.claude/settings.json"
 agents = "C:/Users/x/.claude/CLAUDE.md"
+# plugin_repos 是 **v4 及更早的遗留字段**(自己写的插件仓目录,曾被 collect 抄声明)。
+# v5 起自有插件活源整体迁入金库 shared/plugins/,清单权威在 shared/plugins/manifest.toml,
+# 新机 **不配置** plugin_repos;仅历史金库迁移时才可能读到。留空即不采集(见 §11)。
 
 [sources.codex]
 skills = "C:/Users/x/.codex/skills"
