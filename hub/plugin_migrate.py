@@ -207,16 +207,23 @@ def _cutover_reinstall(tool, name, desired, inst, dep, vault_root):
         depends_on=deps,cli=CliCommand("claude",["plugin","uninstall",pid,"--keep-data","--scope","user"]))
     install=PluginAction(f"{name}:claude:cutover-install",f"claude 从新源重装 {pid}",
         depends_on=(uninstall.id,),cli=CliCommand("claude",["plugin","install",pid,"--scope","user"]))
-    verb="enable" if desired else "disable"
-    policy=PluginAction(f"{name}:claude:cutover-{verb}",f"claude 重装后{verb} {pid}",
-        depends_on=(install.id,),cli=CliCommand("claude",["plugin",verb,pid,"--scope","user"]))
-    state=PluginAction(f"{name}:claude:cutover-state",f"台账 {name}/claude",
-        depends_on=(policy.id,),state=(name,"claude",head,version))
-    return [uninstall,install,policy,state]
+    # claude plugin install 装即自动启用：desired 时不补冗余 enable，readiness=cutover-install；
+    # 仅当期望禁用时才补一条 cutover-disable。
+    chain=[uninstall,install]; last=install.id
+    if not desired:
+        disable=PluginAction(f"{name}:claude:cutover-disable",f"claude 重装后disable {pid}",
+            depends_on=(install.id,),cli=CliCommand("claude",["plugin","disable",pid,"--scope","user"]))
+        chain.append(disable); last=disable.id
+    chain.append(PluginAction(f"{name}:claude:cutover-state",f"台账 {name}/claude",
+        depends_on=(last,),state=(name,"claude",head,version)))
+    return chain
 
 def _ready_dep(actions, name, tool):
+    # 返回本次真正建立 readiness（installed+enabled）的动作 id，供退役旧身份依赖。
+    # 不再固定挂在 :enable 上——install 装即启用即代表就绪；若预检时新身份已 ready，
+    # 则本轮无对应动作，返回 None（退役无需虚假依赖，可无条件执行）。
     prefix=f"{name}:{tool}:"
-    preferred=("cutover-enable","cutover-reinstall","enable","add")
+    preferred=("cutover-install","cutover-reinstall","install","enable","add")
     for verb in preferred:
         found=[a.id for a in actions if a.id==prefix+verb]
         if found: return found[-1]

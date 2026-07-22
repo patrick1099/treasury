@@ -12,6 +12,9 @@ from hub.plugin_manifest import load_plugin_manifest, check_identity, plugin_ver
 class PluginAction:
     id: str; describe: str; depends_on: tuple = ()
     cli: object = None; state: tuple = None
+    # 幂等兜底：置为某 pid 时，该动作 CLI 非零退出后，先向平台确认此 pid 确实 enabled，
+    # 是则按成功处理（并发/重跑下的 already-enabled）；否则仍记失败。None = 不做确认。
+    confirm_enabled: str = None
 
 @dataclass
 class PluginPlan:
@@ -35,7 +38,7 @@ def execute_plugin_plan(plan: PluginPlan, w: Writer, runner=None) -> PluginRunRe
         try:
             if a.cli is not None:
                 r = run_cli(a.cli, runner=runner)
-                if r.returncode != 0:
+                if r.returncode != 0 and not _confirm_enabled_ok(a, runner):
                     rep.failed.append((a.id, r.stderr.strip() or f"exit {r.returncode}"))
                     continue
             if a.state is not None:
@@ -44,6 +47,18 @@ def execute_plugin_plan(plan: PluginPlan, w: Writer, runner=None) -> PluginRunRe
         except Exception as e:
             rep.failed.append((a.id,str(e)))
     return rep
+
+def _confirm_enabled_ok(a, runner) -> bool:
+    # 仅当动作声明 confirm_enabled 时才生效：向平台实测该 pid 是否 enabled。
+    # 真为 enabled → 把非零退出（如 already-enabled、并发重跑）按成功处理；
+    # 否则返回 False → 调用方记失败。绝不无条件吞掉非零退出。
+    if not a.confirm_enabled:
+        return False
+    try:
+        inst = installed_plugins(a.cli.tool, runner=runner).get(a.confirm_enabled)
+    except Exception:
+        return False
+    return bool(inst and inst.enabled)
 
 NEEDED = {"claude": ["install","uninstall","enable","disable","marketplace"],
           "codex":  ["add","remove","marketplace"]}
@@ -89,15 +104,15 @@ def _ensure_installed_enabled(tool, name, pid, installed, dep_mkt):
         return [] if pid in installed else [PluginAction(f"{name}:codex:add",
             f"codex 安装启用 {pid}", depends_on=dep, cli=CliCommand("codex",["plugin","add",pid]))]
     if pid not in installed:
-        install = PluginAction(f"{name}:claude:install", f"claude 安装 {pid}", depends_on=dep,
-                cli=CliCommand("claude",["plugin","install",pid,"--scope","user"]))
-        enable = PluginAction(f"{name}:claude:enable", f"claude 启用 {pid}",
-                depends_on=(install.id,),
-                cli=CliCommand("claude",["plugin","enable",pid,"--scope","user"]))
-        return [install, enable]
+        # claude plugin install 安装即在 user scope 自动启用 —— 不再补发冗余 enable。
+        # install 成功即代表 readiness（installed+enabled），退役旧身份可依赖它。
+        return [PluginAction(f"{name}:claude:install", f"claude 安装启用 {pid}", depends_on=dep,
+                cli=CliCommand("claude",["plugin","install",pid,"--scope","user"]))]
     if not installed[pid].enabled:
+        # 已装但禁用：只补 enable。带幂等兜底：并发/重跑时若已 enabled 则确认后按成功。
         return [PluginAction(f"{name}:claude:enable", f"claude 启用 {pid}", depends_on=dep,
-                cli=CliCommand("claude",["plugin","enable",pid,"--scope","user"]))]
+                cli=CliCommand("claude",["plugin","enable",pid,"--scope","user"]),
+                confirm_enabled=pid)]
     return []
 
 def _ensure_disabled(tool, name, pid, installed):
