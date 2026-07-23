@@ -27,7 +27,11 @@ def run_cli(cmd: CliCommand, runner=None) -> CliResult:
     if runner is not None:
         return runner([cmd.tool, *cmd.argv])          # 注入假 runner：收 [tool, *argv]
     try:
-        p = subprocess.run([cmd.tool, *cmd.argv], capture_output=True, text=True)
+        # 显式 utf-8 + replace:平台 CLI 的输出一律按 utf-8 读。绝不能交给本机 locale——
+        # cp936 机器上 `claude plugin --help` 的非 ASCII 字符会让读取线程抛
+        # UnicodeDecodeError,p.stdout 静默变成 None(返回码仍是 0),下游 str 运算才崩。
+        p = subprocess.run([cmd.tool, *cmd.argv], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace")
     except OSError as e:
         raise CliUnavailable(f"{cmd.tool} CLI 不可执行: {e}") from e
     return CliResult(p.returncode, p.stdout, p.stderr)
