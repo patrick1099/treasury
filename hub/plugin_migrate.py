@@ -316,8 +316,9 @@ def prepare_retire(src_dir, vault_root, input_path, dev, runner=None,
     if blocks:
         return RetirePlan([], blocks)
     src_real=src_dir.resolve()
-    # 磁盘真实条目名（区分大小写）：Windows/macOS 文件系统大小写不敏感，Path 比较也不敏感，
-    # 单靠 realpath==base/name 会放过 CJT/ 对 [cjt]。用 iterdir 的 p.name 做精确字符串匹配。
+    # 磁盘真实条目名（区分大小写）：Windows/macOS 文件系统大小写不敏感（Windows 下连 Path 比较
+    # 本身也不敏感），单靠 realpath==base/name 会放过 CJT/ 对 [cjt]。用 iterdir 的 p.name 做精确
+    # 字符串匹配，两平台都稳（PosixPath.__eq__ 区分大小写，靠文件系统层面这道 iterdir 才兜得住）。
     real_names={p.name for p in src_dir.iterdir()} if src_dir.is_dir() else set()
     actions=[]
     for name in inp:                              # containment：只删 src_dir 直属真实 git 子仓
