@@ -34,3 +34,31 @@ def test_missing_executable_becomes_cli_unavailable(monkeypatch):
                         lambda *a,**k: (_ for _ in ()).throw(FileNotFoundError("missing")))
     with pytest.raises(CliUnavailable):
         run_cli(CliCommand("claude",["plugin","--help"]))
+
+# --- 子进程输出的解码:绝不能落到本机 locale 上 ---
+# 真机事故(2026-07-23):`claude plugin --help` 里有个非 ASCII 字符,本机 preferred
+# encoding 是 cp936 → 读取线程 UnicodeDecodeError → p.stdout 变成 None(返回码仍是 0)
+# → preflight_cli 的 `plug.stdout + mkt.stdout` 抛 TypeError,refresh 整条跑不完。
+
+def test_run_cli_decodes_utf8_not_locale(monkeypatch):
+    """不许把解码交给机器 locale——必须显式 utf-8 且不因坏字节丢掉整份输出。"""
+    seen = {}
+    class _P:
+        returncode, stdout, stderr = 0, "", ""
+    def fake_run(argv, **kw):
+        seen.update(kw)
+        return _P()
+    monkeypatch.setattr(plugin_cli.subprocess, "run", fake_run)
+    run_cli(CliCommand("claude", ["plugin", "--help"]))
+    assert (seen.get("encoding") or "").lower().replace("-", "") == "utf8", \
+        f"run_cli 必须显式指定 utf-8,实际 kwargs={seen}"
+    assert seen.get("errors"), "run_cli 必须指定 errors 容错,否则坏字节会让整份 stdout 变成 None"
+
+def test_run_cli_survives_non_ascii_child_output():
+    """端到端:子进程吐 UTF-8 非 ASCII 字节,stdout 必须是字符串而不是 None。"""
+    import sys
+    r = run_cli(CliCommand(sys.executable,
+        ["-c", r"import sys; sys.stdout.buffer.write('—…'.encode('utf-8'))"]))
+    assert r.returncode == 0
+    assert r.stdout is not None, "坏解码会让 stdout 变成 None,下游 str 运算即崩"
+    assert "—" in r.stdout
