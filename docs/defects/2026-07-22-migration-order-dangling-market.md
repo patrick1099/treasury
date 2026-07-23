@@ -30,6 +30,12 @@ runbook §3/§6/§7（phase3 退役在 §6，回滚顺延 §7）、spec P8、hub
 - 回归补测见 `test_plugin_retire.py`：逃逸表名/junction/非仓目录三条零删除 + claude-disabled 放行/
   claude-enabled 阻断/codex-present 阻断。附带修 `hub/fslink.py` 的 `mklink` CP936 解码坑（errors="replace"）。
 
+### 短审补丁 #2（2026-07-23，Windows 大小写）
+- **Important：`_direct_child_repo` 的 `realpath == base/name` 用 `Path` 比较，Windows 不区分大小写**，
+  `CJT/` 对 `[cjt]` 仍放行、会误删身份大小写不符的仓。改为在 `prepare_retire` 用 `src_dir.iterdir()`
+  取磁盘真实 `p.name`、做区分大小写字符串匹配：清单名不在真实条目集里但 `lexists` 命中（大小写异）→
+  阻断零删除；真正缺失才幂等跳过。回归补 `test_case_mismatch_dir_name_blocks_zero_delete`（Windows 专项）。
+
 **下方原始分析保留作历史。**
 
 ## 现象

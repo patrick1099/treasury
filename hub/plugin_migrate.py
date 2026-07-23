@@ -316,14 +316,19 @@ def prepare_retire(src_dir, vault_root, input_path, dev, runner=None,
     if blocks:
         return RetirePlan([], blocks)
     src_real=src_dir.resolve()
+    # 磁盘真实条目名（区分大小写）：Windows/macOS 文件系统大小写不敏感，Path 比较也不敏感，
+    # 单靠 realpath==base/name 会放过 CJT/ 对 [cjt]。用 iterdir 的 p.name 做精确字符串匹配。
+    real_names={p.name for p in src_dir.iterdir()} if src_dir.is_dir() else set()
     actions=[]
     for name in inp:                              # containment：只删 src_dir 直属真实 git 子仓
         if not _valid_seg(name):
             blocks.append(f"{name}: 退役目标名非法（须单一路径段，禁绝对路径/分隔符/.与..）")
             continue
         tgt=src_dir/name
-        if not os.path.lexists(tgt):
-            continue                              # 已删→幂等跳过
+        if name not in real_names:                # 无此精确大小写条目
+            if os.path.lexists(tgt):              # 但存在大小写不一致的条目 → 拒绝(不误删)
+                blocks.append(f"{name}: 磁盘目录名与清单大小写不一致，退役被拒（零删除）")
+            continue                              # 真正不存在 → 幂等跳过
         if not _direct_child_repo(tgt, src_real, name):
             blocks.append(f"{name}: 退役目标非 {src_dir} 直属真实 git 子仓（链接/junction/坏链/非仓拒绝）")
             continue
