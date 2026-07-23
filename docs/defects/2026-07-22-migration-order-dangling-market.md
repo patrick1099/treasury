@@ -17,7 +17,20 @@
 
 回归测试见 `tests/hub/test_plugin_retire.py`（含 Codex 悬空市场→读不到→零删除、Claude 容忍/Codex 不容忍差异 fixture）
 与 `test_plugin_migrate_exec.py`（phase1 保源、重跑幂等、内容漂移拒绝、Codex 旧市场根 cutover 前始终可读）。
-runbook §3/§6/§7（phase3 退役在 §6，回滚顺延 §7）、spec P8、hub/README CLI 帮助已同步。**下方原始分析保留作历史。**
+runbook §3/§6/§7（phase3 退役在 §6，回滚顺延 §7）、spec P8、hub/README CLI 帮助已同步。
+
+### 短审补丁（2026-07-23，reviewer=Needs fixes 两项）
+- **阻断：退役目标 containment。** `load_migration_input` 接受任意 TOML 表名，`prepare_retire` 曾直接
+  `src_dir/<name>` 删除，`["../outside"]` 可逃逸到容器外。补 `_valid_seg`（名字必须单一规范路径段：
+  拒空/绝对路径/分隔符/`.`/`..`）+ `_direct_child_repo`（目标存在时须非链接、`realpath` 严格 ==
+  `src_dir/<name>`、是 git 仓——挡 symlink/junction/坏链/普通非仓目录），任一异常→零删除。
+- **Important：Claude 列表外 disabled 是合法态。** 旧逻辑对 `not desired and present` 一律阻断，
+  错杀 compact-plus 型「保留安装但禁用」。改为 Claude 仅在 `enabled` 时阻断（disabled 放行退役），
+  Codex 无独立禁用模型故列表外 present 仍阻断。
+- 回归补测见 `test_plugin_retire.py`：逃逸表名/junction/非仓目录三条零删除 + claude-disabled 放行/
+  claude-enabled 阻断/codex-present 阻断。附带修 `hub/fslink.py` 的 `mklink` CP936 解码坑（errors="replace"）。
+
+**下方原始分析保留作历史。**
 
 ## 现象
 

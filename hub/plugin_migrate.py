@@ -181,6 +181,23 @@ def _under(path: str, base: Path) -> bool:
     p=_norm(path); b=_norm(str(base))            # _norm 用 normpath → 原生分隔符,拼 os.sep
     return p==b or p.startswith(b + os.sep)
 
+def _valid_seg(name: str) -> bool:
+    # 退役目标名必须是单一规范路径段：拒空、绝对路径、含分隔符、. 与 ..
+    # （迁移输入的表名可以是任意字符串；这道闸挡住 "../outside" 之类逃逸出 src_dir 的名字）。
+    if not name or name in (".", ".."): return False
+    if os.path.isabs(name): return False
+    if "/" in name or "\\" in name or os.sep in name or (os.altsep and os.altsep in name):
+        return False
+    return os.path.normpath(name) == name
+
+def _direct_child_repo(active: Path, base_real: Path, name: str) -> bool:
+    # 目标存在时必须是 src_dir 下真实直属 git 子仓：非链接、realpath 严格 == base/name、是 git 仓。
+    # 挡住 symlink/junction（realpath 偏离 base）、坏链、普通非仓目录。
+    if active.is_symlink(): return False
+    try: real=Path(os.path.realpath(active))
+    except OSError: return False
+    return real == base_real/name and active.is_dir() and is_git_repo(active)
+
 def _onexc_writable(func, p, exc):
     # git 在 Windows 上把 .git/objects 下的对象文件设为只读，裸 shutil.rmtree 删不动；
     # 沿用 tests/hub/test_plugin_refresh.py 里已有的同款 chmod 后重试写法。
@@ -290,11 +307,29 @@ def prepare_retire(src_dir, vault_root, input_path, dev, runner=None,
             if desired and not active:
                 blocks.append(f"{tool}: 新身份 {pid} 未按期望安装/启用，退役被拒")
             if not desired and present:
-                blocks.append(f"{tool}: {pid} 应禁用/不装但仍在，退役被拒")
+                # Claude 列表外允许保留安装但 disabled（compact-plus 型）→ 合法；enabled 才阻断。
+                # Codex 无独立禁用模型：列表外仍 present 即阻断。
+                off_ok = (tool == "claude" and not installed[pid].enabled)
+                if not off_ok:
+                    reason = "列表外仍启用" if tool == "claude" else "列表外仍安装（Codex 无独立禁用）"
+                    blocks.append(f"{tool}: {pid} {reason}，退役被拒")
     if blocks:
         return RetirePlan([], blocks)
-    actions=[RetireAction(f"{name}:retire-src", f"删除旧源 {src_dir/name}", str(src_dir/name))
-             for name in inp if (src_dir/name).exists()]   # 已删则跳过(幂等)
+    src_real=src_dir.resolve()
+    actions=[]
+    for name in inp:                              # containment：只删 src_dir 直属真实 git 子仓
+        if not _valid_seg(name):
+            blocks.append(f"{name}: 退役目标名非法（须单一路径段，禁绝对路径/分隔符/.与..）")
+            continue
+        tgt=src_dir/name
+        if not os.path.lexists(tgt):
+            continue                              # 已删→幂等跳过
+        if not _direct_child_repo(tgt, src_real, name):
+            blocks.append(f"{name}: 退役目标非 {src_dir} 直属真实 git 子仓（链接/junction/坏链/非仓拒绝）")
+            continue
+        actions.append(RetireAction(f"{name}:retire-src", f"删除旧源 {tgt}", str(tgt)))
+    if blocks:                                    # 名称/目标校验失败 → 零删除
+        return RetirePlan([], blocks)
     return RetirePlan(actions, [])
 
 def execute_retire(plan: RetirePlan, w: Writer) -> RetireReport:

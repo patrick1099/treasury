@@ -18,8 +18,10 @@ def make_dir_link(target: Path, link: Path) -> None:
     link.parent.mkdir(parents=True, exist_ok=True)
     if os.name == "nt":
         # junction：不需要管理员/开发者模式（symlink 才需要）
+        # errors="replace"：cmd 在中文 Windows 上按 CP936 输出，裸 utf-8 解码会在
+        # reader 线程抛 UnicodeDecodeError（把真正的建链失败盖成解码错）。
         r = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, errors="replace")
         if r.returncode != 0:
             raise LinkError(f"mklink /J 失败 ({link} → {target}): "
                             f"{r.stderr.strip() or r.stdout.strip()}")
