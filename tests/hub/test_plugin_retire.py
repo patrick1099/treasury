@@ -1,4 +1,4 @@
-import json, subprocess
+import json, os, subprocess
 from pathlib import Path
 import pytest
 from hub.writer import Writer
@@ -177,6 +177,21 @@ def test_retire_target_junction_blocks_zero_delete(tmp_path):
     assert plan.blocks and plan.actions==[]
     execute_retire(plan, Writer())
     assert (external/".git").exists()                                       # 链接目标(外部真仓)完好
+
+@pytest.mark.skipif(os.name!="nt", reason="大小写不敏感文件系统专项(Windows)")
+def test_case_mismatch_dir_name_blocks_zero_delete(tmp_path):
+    # 磁盘 CJT/ vs 清单 [cjt]:身份大小写不一致 → 阻断,零删除(Path 比较在 Windows 不区分大小写,
+    # 单靠 realpath==base/name 会漏；须用 iterdir 拿真实 p.name 做区分大小写字符串比较)
+    src=tmp_path/"plugins-dev"; src.mkdir()
+    _old_repo(src, "CJT")                                   # 真实目录名大写
+    inp=tmp_path/"m.toml"; inp.write_text('[cjt]\nplatforms=["claude"]\nenabled=["claude"]\n',encoding="utf-8")
+    cl=[{"name":"cjt","path":"shared/cjt"}]
+    ci=[{"id":"cjt@cjt","version":"0.1.0","enabled":True,"installPath":"c"}]
+    plan=prepare_retire(src, tmp_path, inp, _dev(tmp_path,"box",claude=("cjt",)),
+                        runner=_runner2(ci,[],cl,[]))
+    assert plan.blocks and plan.actions==[]
+    execute_retire(plan, Writer())
+    assert (src/"CJT/.git").exists()                        # 大小写不符的仓未被删
 
 def test_retire_target_non_git_dir_blocks(tmp_path):
     # 声明名存在但只是普通非 git 目录 → 拒绝(不当作旧子仓删)
