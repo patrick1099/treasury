@@ -212,6 +212,10 @@ memory 走一条与 skill 不同的路:**skill 活链、memory 走上行收集 +
 > 进来，父仓记下的是一个它自己都没有的 commit sha——本机看着好好的，别的设备 clone 下来那个目录是**空的**。
 > `hub sync` 在提交前设闸（`GitlinkTracked`），`hub status --check` 也会单列出来；出路是 `hub induct`。
 
+> **pull/push 够不着远端会自己退避重试**（3s、8s 各一次），只对 `RemoteUnavailable` 重试，内容冲突一次都不重。
+> 网络操作带 `http.lowSpeedLimit=1000 / lowSpeedTime=60`，挂死的连接 1 分钟认输，不再干等 300 秒。
+> 背景：金库是**私有**仓，每次操作比公开仓多一轮 401 + 带凭据重来，走代理时单次失败率实测约 1/6。
+
 每个插件自带 market-of-one，稳定身份为 `<name>@<name>`。`shared/plugins/manifest.toml` 声明插件及适配平台；
 `<host>/device.toml` 的 `[plugins.claude].enabled` / `[plugins.codex].enabled` 是本机分平台允许列表。
 

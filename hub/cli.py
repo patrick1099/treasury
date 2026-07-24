@@ -371,7 +371,7 @@ def _cmd_sync(args) -> int:
     try:
         b.acquire()
     except RemoteUnavailable as e:          # 必须排在 ConflictError 前面(它是子类)
-        print("sync 停止:够不着远端(网络/超时/认证)——不是内容冲突,手工解冲突没用,重试即可")
+        print("sync 停止:够不着远端(网络/超时/认证)——不是内容冲突,自动重试过了仍不通,手工解冲突没用")
         print(e)
         return 2
     except ConflictError as e:
@@ -393,7 +393,7 @@ def _cmd_sync(args) -> int:
         print(e, end="")
         return 1
     except RemoteUnavailable as e:
-        print("sync 停止:本地已提交,但推不上去(网络/超时/认证),稍后 `hub sync` 重试")
+        print("sync 停止:本地已提交,但推不上去(网络/超时/认证),自动重试过了仍不通;稍后再 `hub sync` 即可")
         print(e)
         return 2
     if getattr(args, "refresh", False):
