@@ -34,7 +34,7 @@ def repo_meta(repo: Path) -> RepoMeta:
     sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
     dirty = bool(_git(repo, "status", "--porcelain").stdout.strip())
     r = subprocess.run(["git", "remote", "get-url", "origin"], cwd=repo,
-                       capture_output=True, text=True, encoding="utf-8")
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
     remote = r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
     return RepoMeta(name=repo.name, remote=remote, sha=sha, dirty=dirty)
 

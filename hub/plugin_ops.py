@@ -149,7 +149,8 @@ def prepare_plugin_register(vault_root, dev, runner=None) -> PluginPlan:
 class PluginRepoUnavailable(RuntimeError): pass
 
 def _git_text(src, *argv) -> str:
-    r = subprocess.run(["git","-C",str(src),*argv], capture_output=True, text=True)
+    r = subprocess.run(["git","-C",str(src),*argv], capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
     if r.returncode != 0:
         raise PluginRepoUnavailable(
             f"{src} 不是可用的嵌套 git 仓（需要 restore/rehydrate）：{r.stderr.strip()}")
@@ -241,7 +242,8 @@ def _health_state(vault_root, dev, e, tool, installed, mkts, ledger) -> str:
     if e.remote:
         try:
             cur = subprocess.run(["git","-C",str(src_dir),"remote","get-url","origin"],
-                                 capture_output=True, text=True).stdout.strip()
+                                 capture_output=True, text=True,
+                                 encoding="utf-8", errors="replace").stdout.strip()
             if (e.sha and _head_sha(src_dir) != e.sha) or cur != e.remote:
                 return "drift"
         except PluginRepoUnavailable:
