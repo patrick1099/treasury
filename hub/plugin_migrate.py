@@ -52,7 +52,7 @@ def _market_ready(src: Path, name: str) -> bool:
 
 def _index_modes(vault_root: Path, rel: str) -> list[str]:
     r=subprocess.run(["git","-C",str(vault_root),"ls-files","-s","--",rel],
-                     capture_output=True,text=True)
+                     capture_output=True,text=True,encoding="utf-8",errors="replace")
     if r.returncode!=0:
         raise MigrationInputError(f"父金库 git index 不可读: {r.stderr.strip()}")
     return [line.split()[0] for line in r.stdout.splitlines() if line.strip()]
@@ -157,7 +157,8 @@ def _tree_manifest(root: Path, prune_git: bool=False) -> list:
     return sorted(rows)
 
 def _git_out(cwd, *a):
-    r=subprocess.run(["git","-C",str(cwd),*a], capture_output=True, text=True)
+    r=subprocess.run(["git","-C",str(cwd),*a], capture_output=True, text=True,
+                     encoding="utf-8", errors="replace")
     return r.stdout.strip() if r.returncode==0 else None
 
 def _content_manifest_no_git(root: Path) -> list:

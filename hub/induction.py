@@ -12,7 +12,10 @@ class InductionPlan:
     gitdir: str            # 父仓 git admin dir 绝对路径
 
 def _run(cwd, *a, check=True):
-    return subprocess.run(["git","-C",str(cwd),*a], check=check, capture_output=True, text=True)
+    # encoding/errors 必须钉死:交给本机 locale 的话,非 ASCII 输出会让 stdout 静默变
+    # None(返回码仍是 0),下游 .stdout.strip() 才崩。git 的输出一律 UTF-8。
+    return subprocess.run(["git","-C",str(cwd),*a], check=check, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace")
 
 def _admin(gitdir: str) -> Path:
     d = Path(gitdir) / "hub-induction"; d.mkdir(parents=True, exist_ok=True); return d
