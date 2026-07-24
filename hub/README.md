@@ -208,12 +208,18 @@ memory 走一条与 skill 不同的路:**skill 活链、memory 走上行收集 +
 自有插件的稳态活源位于 `<vault>/shared/plugins/<name>/`；每个插件继续保留自己的 `.git`、remote 和提交历史，
 父金库同时跟踪除嵌套 `.git` 外的源码文件。`~/.claude/plugins-dev` 只是一轮迁移输入，cutover 完成后不再是活源。
 
+> **硬不变量：金库索引里一个 gitlink（mode 160000）都不许有。** 把带 `.git` 的目录直接 `git add`
+> 进来，父仓记下的是一个它自己都没有的 commit sha——本机看着好好的，别的设备 clone 下来那个目录是**空的**。
+> `hub sync` 在提交前设闸（`GitlinkTracked`），`hub status --check` 也会单列出来；出路是 `hub induct`。
+
 每个插件自带 market-of-one，稳定身份为 `<name>@<name>`。`shared/plugins/manifest.toml` 声明插件及适配平台；
 `<host>/device.toml` 的 `[plugins.claude].enabled` / `[plugins.codex].enabled` 是本机分平台允许列表。
 
 - `hub register --vault <v> --host <h>`：注册全部适配市场，并按 device 允许列表收敛安装/启用状态。
 - `hub refresh --vault <v> --host <h>`：只刷新已经安装且已显式 bump+commit 的插件；不替用户改版本或源码仓。
 - `hub status --vault <v> --host <h> --check`：只读检查 source、启用态、仓状态和本机刷新基线。
+- `hub induct --vault <v> <金库内相对路径>`：把带 `.git` 的目录正规纳入父仓跟踪（存文件、不存 gitlink）。
+  **日常手放一个新插件进 `shared/plugins/` 之后必须先跑它**，再 `hub sync`。
 - `hub migrate-plugins ...`（phase1）/ `hub cutover-plugins ...`（phase2）/
   `hub retire-plugin-sources ...`（phase3）：一次性迁移的三段式。phase1 只复制+induct **绝不删源**；
   phase2 只官方 CLI 平台切换；phase3 平台切换验证通过后才退役旧源（全量预检，任一旧引用/新身份未就位→零删除）。
