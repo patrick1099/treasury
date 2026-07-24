@@ -33,6 +33,17 @@ def _has_gitlink(parent_root, rel) -> bool:
     out = _run(parent_root, "ls-files", "-s", "--", rel, check=False).stdout
     return any(l.startswith("160000") for l in out.splitlines())
 
+def drop_gitlink(parent_root, rel: str) -> bool:
+    """把索引里那条 gitlink 摘掉,**文件留在盘上**。已经不是 gitlink 就 no-op。
+
+    没有这一步的话,已经被记成 gitlink 的目录是个死结:`git add` 对它是 no-op
+    (父仓认为"这一条没变"),induct 不回来;而 plugin_migrate 见到 gitlink 直接拒绝。
+    """
+    if not _has_gitlink(parent_root, rel):
+        return False
+    _run(parent_root, "rm", "--cached", "-q", "--", rel)
+    return True
+
 def recover_pending(parent_root, w: Writer) -> list[str]:
     parent_root = Path(parent_root)
     gitdir = os.path.abspath(os.path.join(str(parent_root),

@@ -7,7 +7,8 @@ from hub.migrate import migrate_schema, SchemaMigrationError
 from hub.derive import render_memory_index
 from hub.scope import lint_scope
 from hub.links import lint_raw_paths, load_lint_exempt
-from hub.backend import GitBackend, ConflictError
+from hub.backend import (GitBackend, ConflictError, RemoteUnavailable,
+                         GitlinkTracked, tracked_gitlinks)
 from hub.collect import plan_deletions, preflight, run_all
 from hub.collect.errors import MissingSourceError
 from hub.frontmatter import FrontmatterError
@@ -34,7 +35,8 @@ from hub.plugin_cli import CliUnavailable
 from hub.vault import UnsupportedVaultVersion
 from hub.plugin_migrate import (prepare_migration, execute_migration, prepare_cutover,
                                 prepare_retire, execute_retire, MigrationInputError)
-from hub.induction import recover_pending, InductionError
+from hub.induction import (recover_pending, InductionError,
+                           prepare_induction, execute_induction, drop_gitlink)
 
 def _lint(vault, exempt: set[str]) -> list[str]:
     errs = []
@@ -65,6 +67,12 @@ def _cmd_status(args) -> int:
         print("skill 链接:")
         for state, label in rows:
             print(f"  [{state}] {label}")
+    links = tracked_gitlinks(vault_root) if check else []
+    if links:
+        # 插件健康判据读的是**盘上那个嵌套仓**,盘上永远是好的,所以它看不见这个坑。
+        print("gitlink(空壳,别的设备 clone 拿不到内容,跑 `hub induct` 纳入):")
+        for l in links:
+            print(f"  [gitlink] {l}")
     if check:
         vh = view_health(vault_root, dev, _hub_root())
         print("memory 视图:")
@@ -80,7 +88,7 @@ def _cmd_status(args) -> int:
             print("插件:")
             for h in ph:
                 print(f"  [{h.state}] {h.name}@{h.tool}")
-        return 1 if (any(x[0] != "ok" for x in (rows + vh))
+        return 1 if (links or any(x[0] != "ok" for x in (rows + vh))
                      or any(h.state != "ok" for h in ph)) else 0
     return 0
 
@@ -330,11 +338,42 @@ def _cmd_retire_plugin_sources(args) -> int:
         print(f"  {verb} {a.target}")
     return 0
 
+def _cmd_induct(args) -> int:
+    """把金库里带 `.git` 的目录正规纳入父仓跟踪(存文件,不存 gitlink)。
+
+    日常新增插件不走 migrate-plugins,以前就没有任何一条路能做这件事:
+    手 `git add` 得到 gitlink 空壳,而 migrate-plugins 见到 gitlink 直接拒绝。
+    """
+    vault_root = Path(args.vault)
+    w = Writer(dry_run=args.dry_run)
+    for raw in args.path:
+        rel = str(raw).replace("\\", "/").strip("/")
+        if not (vault_root / rel).is_dir():
+            print(f"induct 停止:{rel} 不是金库里的目录"); return 1
+        try:
+            plan = prepare_induction(vault_root, rel)
+            if args.dry_run:
+                print(f"  [dry-run] 摘 gitlink(若有)+ induct {rel}")
+            else:
+                if drop_gitlink(vault_root, rel):
+                    print(f"  已摘掉 {rel} 的 gitlink 条目(文件留在盘上)")
+                execute_induction(plan, vault_root, w)
+                print(f"  已纳入 {rel}")
+        except InductionError as e:
+            print(f"induct 停止:{e}"); return 1
+    if not args.dry_run:
+        print("提示:改动还在 index 里,跑 `hub sync` 提交并推送。")
+    return 0
+
 def _cmd_sync(args) -> int:
     vault_root = Path(args.vault)
     b = GitBackend(vault_root)
     try:
         b.acquire()
+    except RemoteUnavailable as e:          # 必须排在 ConflictError 前面(它是子类)
+        print("sync 停止:够不着远端(网络/超时/认证)——不是内容冲突,手工解冲突没用,重试即可")
+        print(e)
+        return 2
     except ConflictError as e:
         print("sync 停止:git 冲突,请手工解决后 `hub sync` 重试")
         print(e)
@@ -347,7 +386,16 @@ def _cmd_sync(args) -> int:
             print("  -", e)
         return 1
     _write_index(vault_root, vault, Writer())
-    b.publish("chore(hub): sync")
+    try:
+        b.publish("chore(hub): sync")
+    except GitlinkTracked as e:
+        print("sync 停止:")
+        print(e, end="")
+        return 1
+    except RemoteUnavailable as e:
+        print("sync 停止:本地已提交,但推不上去(网络/超时/认证),稍后 `hub sync` 重试")
+        print(e)
+        return 2
     if getattr(args, "refresh", False):
         return _cmd_refresh(args)          # 传播 refresh 的返回码，不再吞掉失败
     print("提示：若 shared/ 有变化，运行 `hub refresh` 重算 memory 视图。")
@@ -410,6 +458,11 @@ def build_parser() -> argparse.ArgumentParser:
     pm.add_argument("--all", action="store_true", help="批量提升本机备份区全部记忆")
     pm.add_argument("--dry-run", action="store_true")
     pm.set_defaults(func=_cmd_promote_memory)
+
+    ind = sub.add_parser("induct", parents=[common])
+    ind.add_argument("path", nargs="+", help="金库内的相对路径(如 shared/plugins/foo)")
+    ind.add_argument("--dry-run", action="store_true")
+    ind.set_defaults(func=_cmd_induct)
 
     mig = sub.add_parser("migrate-schema", parents=[common])
     mig.add_argument("--to", type=int, required=True)
