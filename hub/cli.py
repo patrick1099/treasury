@@ -17,6 +17,8 @@ from hub.register import (register_skills, RegisterConflict,
                           plan_register_skills, commit_register_skills,
                           plan_hub_memory_skill, commit_hub_memory_skill,
                           check_link_collisions)
+from hub.opencode_skills import (plan_link_opencode_skills, commit_link_opencode_skills,
+                                 opencode_skill_status, stale_skills_paths_hint)
 from hub.promote import (promote_skill, promote_memory, promote_memory_all,
                          PromoteConflict, PromoteMemoryConflict)
 from hub.status_report import link_status, view_health
@@ -67,6 +69,15 @@ def _cmd_status(args) -> int:
         print("skill 链接:")
         for state, label in rows:
             print(f"  [{state}] {label}")
+    try:
+        oc_rows = opencode_skill_status(vault_root, dev, _hub_root())
+    except (PluginManifestError, PluginIdentityError, PluginContainmentError) as e:
+        print(e)
+        return 1
+    if oc_rows:
+        print("opencode skill 链接:")
+        for state, label in oc_rows:
+            print(f"  [{state}] {label}")
     links = tracked_gitlinks(vault_root) if check else []
     if links:
         # 插件健康判据读的是**盘上那个嵌套仓**,盘上永远是好的,所以它看不见这个坑。
@@ -88,7 +99,7 @@ def _cmd_status(args) -> int:
             print("插件:")
             for h in ph:
                 print(f"  [{h.state}] {h.name}@{h.tool}")
-        return 1 if (links or any(x[0] != "ok" for x in (rows + vh))
+        return 1 if (links or any(x[0] != "ok" for x in (rows + oc_rows + vh))
                      or any(h.state != "ok" for h in ph)) else 0
     return 0
 
@@ -104,12 +115,17 @@ def _cmd_register(args) -> int:
         to_link, ensured = plan_register_skills(vault_root, dev)
         hm_links = plan_hub_memory_skill(hub_root, dev)
         check_link_collisions(to_link, hm_links)     # 跨来源同名（如金库也有 hub-memory）→ 零写
+        oc_link, oc_ensured = plan_link_opencode_skills(vault_root, dev, hub_root)  # opencode 自己的落点
         check_config(vault_root, host)
         writes, warnings, oc_plan = prepare_memory_views(vault_root, dev)
         plugin_plan = prepare_plugin_register(vault_root, dev)          # 预检并入 prepare
+        hint = stale_skills_paths_hint(dev, vault_root)
+        if hint:
+            warnings.append(hint)
         # ---- 提交（预检全过之后才动笔）----
         commit_register_skills(to_link, w)
         commit_hub_memory_skill(hm_links, w)
+        commit_link_opencode_skills(oc_link, w)
         write_config(vault_root, host, hub_root, w)
         commit_memory_views(writes, oc_plan, w)
         prep = execute_plugin_plan(plugin_plan, w)                      # 提交期执行 CLI
@@ -118,7 +134,10 @@ def _cmd_register(args) -> int:
             PluginManifestError, PluginIdentityError, PluginContainmentError,
             CliUnavailable, UnsupportedVaultVersion) as e:
         print(e); return 1
-    print(f"{'预计就位' if args.dry_run else '已就位'} {len(ensured)} 个 skill 链接 + hub-memory")
+    verb = '预计就位' if args.dry_run else '已就位'
+    print(f"{verb} {len(ensured)} 个 skill 链接 + hub-memory")
+    if oc_ensured:
+        print(f"{verb} {len(oc_ensured)} 个 opencode skill 链接（它自己的 skill 目录）")
     for x in warnings:                               # opencode refuse 等：提示不阻断
         print("  ⚠", x)
     if plugin_plan.actions and not args.dry_run:

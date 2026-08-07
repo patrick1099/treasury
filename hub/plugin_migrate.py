@@ -5,7 +5,7 @@ from hub.induction import prepare_induction, execute_induction
 from hub.snapshot import is_git_repo
 from hub.writer import Writer
 from hub.plugin_ops import (prepare_plugin_register, PluginAction, PluginPlan, _same_path,
-                            _plugin_source, _head_sha, _norm)
+                            _plugin_source, _head_sha, _norm, _cli_platforms)
 from hub.plugin_manifest import load_plugin_manifest, plugin_version
 from hub.plugin_cli import CliCommand, installed_plugins, marketplaces, CliUnavailable
 
@@ -395,7 +395,7 @@ def prepare_cutover(vault_root, dev, runner=None, old_market="xu-local") -> Plug
     entries=load_plugin_manifest(vault_root)
     if not entries:
         raise MigrationInputError("shared/plugins/manifest.toml 为空或不存在，不能执行 cutover")
-    tools=sorted({tool for e in entries for tool in e.platforms})
+    tools=sorted({tool for e in entries for tool in _cli_platforms(e)})   # opencode 不走 CLI
     snaps={tool:(installed_plugins(tool,runner=runner),marketplaces(tool,runner=runner))
            for tool in tools}
     reg=prepare_plugin_register(vault_root,dev,runner=runner)
@@ -404,7 +404,7 @@ def prepare_cutover(vault_root, dev, runner=None, old_market="xu-local") -> Plug
     # 同身份换源必须强制重装；单纯 marketplace add/remove 不会更新已装 cache。
     for e in entries:
         src=_plugin_source(vault_root,e.name); pid=f"{e.name}@{e.name}"
-        for tool in e.platforms:
+        for tool in _cli_platforms(e):
             installed,mkts=snaps[tool]
             if pid not in installed or e.name not in mkts or _same_path(mkts[e.name],src):
                 continue

@@ -63,6 +63,17 @@ def _confirm_enabled_ok(a, runner) -> bool:
 NEEDED = {"claude": ["install","uninstall","enable","disable","marketplace"],
           "codex":  ["add","remove","marketplace"]}
 
+# 走**官方 CLI 装卸**的平台。opencode 不在其中：它没有插件安装通道,拿插件里打包的
+# skill 是靠 opencode_skills 把源逐个活链进它自己的 skill 目录,不经 CLI、无台账、
+# 无 install/enable 状态可查。所以本模块（plan/refresh/health 三处）遇到 opencode
+# 一律跳过——**不这么滤的话 NEEDED[tool] 直接 KeyError,整条 register/refresh/status
+# 全挂**。清单里写 platforms = [..., "opencode"] 仍然有意义:它是 opencode_skills
+# 判断"这插件该不该链过去"的依据。
+CLI_PLATFORMS = ("claude", "codex")
+
+def _cli_platforms(entry) -> list[str]:
+    return [t for t in entry.platforms if t in CLI_PLATFORMS]
+
 class PluginBumpNeeded(RuntimeError): pass
 class PluginRepoDirty(RuntimeError): pass
 class PluginContainmentError(RuntimeError): pass
@@ -129,14 +140,14 @@ def prepare_plugin_register(vault_root, dev, runner=None) -> PluginPlan:
     entries = load_plugin_manifest(vault_root)
     if not entries: return PluginPlan([], [])      # 未迁移：跳过、不要求 v3
     require_version_exactly(vault_root, 3)
-    plats = sorted({p for e in entries for p in e.platforms})
+    plats = sorted({p for e in entries for p in _cli_platforms(e)})
     for tool in plats: preflight_cli(tool, NEEDED[tool], runner=runner)
     snap = {t: (installed_plugins(t, runner=runner), marketplaces(t, runner=runner)) for t in plats}
     actions = []
     for e in entries:
         _containment(vault_root, e.name); check_identity(vault_root, e)
         src = _plugin_source(vault_root, e.name)
-        for tool in e.platforms:
+        for tool in _cli_platforms(e):
             installed, mkts = snap[tool]; pid = f"{e.name}@{e.name}"
             macts = _market_actions(tool, e.name, src, mkts); actions += macts
             dep = macts[-1].id if macts else None
@@ -186,7 +197,7 @@ def prepare_plugin_refresh(vault_root, dev, runner=None) -> PluginPlan:
     if not entries: return PluginPlan([], [])
     require_version_exactly(vault_root, 3)
     ledger = read_state()
-    plats = sorted({p for e in entries for p in e.platforms})
+    plats = sorted({p for e in entries for p in _cli_platforms(e)})
     for tool in plats: preflight_cli(tool, NEEDED[tool], runner=runner)
     snap = {t: installed_plugins(t, runner=runner) for t in plats}
     actions = []
@@ -194,7 +205,7 @@ def prepare_plugin_refresh(vault_root, dev, runner=None) -> PluginPlan:
         _containment(vault_root, e.name)
         check_identity(vault_root, e)
         src = _plugin_source(vault_root, e.name)
-        for tool in e.platforms:
+        for tool in _cli_platforms(e):
             installed = snap[tool]; pid = f"{e.name}@{e.name}"
             if pid not in installed: continue          # 未装→跳过（refresh 不装）
             if _is_dirty(src): raise PluginRepoDirty(f"仓 {e.name} 未提交，先提交你的 bump")
@@ -255,11 +266,11 @@ def plugin_health(vault_root, dev, runner=None) -> list:
     if not entries: return []
     require_version_exactly(vault_root, 3)
     ledger = read_state()
-    plats = sorted({p for e in entries for p in e.platforms})
+    plats = sorted({p for e in entries for p in _cli_platforms(e)})
     snap = {t: (installed_plugins(t, runner=runner), marketplaces(t, runner=runner)) for t in plats}
     out = []
     for e in entries:
-        for tool in e.platforms:
+        for tool in _cli_platforms(e):          # opencode 的健康由 opencode_skill_status 报
             installed, mkts = snap[tool]
             out.append(PluginHealth(e.name, tool, _health_state(vault_root, dev, e, tool, installed, mkts, ledger)))
     return out

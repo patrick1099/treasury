@@ -471,9 +471,27 @@ xu-local = "directory:C:\\\\Users\\\\x\\\\.claude\\\\plugins-dev"
 **`shared/plugins/manifest.toml`**（父仓跟踪，权威清单）：每插件一表——
 ```toml
 [<name>]
-platforms = ["claude", "codex"]   # 必填：该插件面向哪些平台
+platforms = ["claude", "codex", "opencode"]   # 必填：该插件面向哪些平台
 [<name>.repository]               # 可选：声明为独立仓才要
 remote = "git@github.com:you/<name>.git"
 sha = "..."                       # 可选：钉住版本
 ```
+
+**平台分两类，投递方式不同**：
+
+- `claude` / `codex` —— 有插件安装通道，hub 调它们各自的官方 CLI 装卸，有台账
+  （`~/.hub/plugin-state.toml`）、有 install/enable 状态可查。
+- `opencode` —— **没有插件通道**。它拿插件里打包的 skill，是靠 hub 把
+  `shared/plugins/<name>/skills/<skill>` 逐个**活链**进 opencode 自己的
+  `<config>/skill/<skill>`（它内置文档里 "Global skills" 那个位置）。零拷贝、改一处
+  立刻生效、无台账。链到它自己家而不是蹭 `~/.claude/`、`~/.agents/`，是为了不让别家的
+  目录约定变成事实标准——opencode 对那两处的扫描是**兼容行为**，可用环境变量
+  `OPENCODE_DISABLE_EXTERNAL_SKILLS=1` 整个关掉（环境变量、不是配置项，hub 装不了）。
+
+因此 `platforms` 里写 `opencode` **不会**触发任何 CLI；它只是 hub 判断"这插件该不该
+链进 opencode"的依据。本机要不要，仍看 `<设备>/device.toml` 的 `[plugins.opencode].enabled`
+——与 claude/codex 同一个口径：清单说支持、设备说要，两道闸都过才落地。
+
+opencode 的落点由 `[paths]` 的 `OPENCODE_HOME`（配置目录）决定，缺省从 `OPENCODE_CONFIG`
+反推其父目录；两个都没有 = 本机没装 opencode，hub 一个链接都不建。
 """
