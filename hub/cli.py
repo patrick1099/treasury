@@ -384,6 +384,21 @@ def _cmd_induct(args) -> int:
         print("提示:改动还在 index 里,跑 `hub sync` 提交并推送。")
     return 0
 
+DEFAULT_SYNC_MESSAGE = "chore(hub): sync"
+
+def sync_message(args) -> str:
+    """本次 sync 的 commit message。缺省是快照语义的固定串。
+
+    金库大部分内容是**派生/快照**（记忆、索引、视图），那种提交没什么可说的，固定串反而
+    诚实。但 `manifest.toml` / `<设备>/device.toml` 这类是**有意图的配置**，改动理由有价值、
+    丢了就没了——这时候用 -m 写清楚。
+
+    只做两件校验：去掉首尾空白；空串（或全空白）视为没给、回落缺省。**绝不接受空消息**：
+    `git commit -m ""` 会造出一条没有标题的提交，在 log 里就是一行空白，事后谁都看不懂。
+    """
+    msg = (getattr(args, "message", None) or "").strip()
+    return msg or DEFAULT_SYNC_MESSAGE
+
 def _cmd_sync(args) -> int:
     vault_root = Path(args.vault)
     b = GitBackend(vault_root)
@@ -406,7 +421,7 @@ def _cmd_sync(args) -> int:
         return 1
     _write_index(vault_root, vault, Writer())
     try:
-        b.publish("chore(hub): sync")
+        b.publish(sync_message(args))
     except GitlinkTracked as e:
         print("sync 停止:")
         print(e, end="")
@@ -446,6 +461,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     sy = sub.add_parser("sync", parents=[common])
     sy.add_argument("--refresh", action="store_true", help="成功后串联 hub refresh 并传播其返回码")
+    sy.add_argument("-m", "--message", default=None,
+                    help=f"本次提交说明（缺省 {DEFAULT_SYNC_MESSAGE!r}）。"
+                         "配置类改动（manifest/device.toml）值得写清理由，日常快照用缺省即可")
     sy.set_defaults(func=_cmd_sync)
     for name, fn in (("collect", _cmd_collect), ("bootstrap", _cmd_bootstrap)):
         sp = sub.add_parser(name, parents=[common])
