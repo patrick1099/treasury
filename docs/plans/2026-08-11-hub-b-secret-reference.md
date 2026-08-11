@@ -956,8 +956,15 @@ from hub.secrets_store import SecretsError
 from hub.secrets_cli import human_only
 
 class _S:
-    def __init__(self, tty): self._tty = tty
+    """假的 stdout。
+
+    有区分度的只是 `isatty()`，但它要顶替 `sys.stdout`，就得能接住 `print()`——
+    issue_token 会先打印一句提示，只有 isatty() 的桩会炸成 AttributeError。
+    """
+    def __init__(self, tty): self._tty = tty; self.buf = []
     def isatty(self): return self._tty
+    def write(self, s): self.buf.append(s); return len(s)
+    def flush(self): pass
 
 def test_human_only_refuses_when_stdout_not_tty(monkeypatch):
     import sys
@@ -1062,6 +1069,14 @@ def cmd_exec(args) -> int:
 **Interfaces (Produces):** `token_path() -> Path`；`issue_token(minutes) -> None`（**从 `CONIN$`
 读确认短语**）；`token_valid(now=None) -> bool`（hook 用，**裸 read_text**）。
 
+> **实施修正（2026-08-11）**，三处，都是初稿照字面写就红的：
+> ① 假 stdout `_S` 只有 `isatty()`，而 `issue_token` 里有 `print()` → AttributeError。
+> 补上 `write`/`flush`（T6 的同名桩一并改）。
+> ② `1 <= True <= MAX_MINUTES` 恒成立（bool 是 int 的子类），一个 `True` 能从数值闸溜过去。
+> 加 `isinstance(minutes, bool)` 显式挡掉，并补 `test_minutes_out_of_range_refused`。
+> ③ `token_valid` 的 docstring **不能把 guard 那个读取函数的名字写全**——
+> `test_token_valid_uses_bare_read` 断言的正是"源码里不出现那个名字"，写全了自己的测试就红。
+
 - [ ] **Step 1: 写失败测试**
 
 ```python
@@ -1072,8 +1087,15 @@ from hub.secrets_store import SecretsError
 from hub import secrets_unlock as U
 
 class _S:
-    def __init__(self, tty): self._tty = tty
+    """假的 stdout。
+
+    有区分度的只是 `isatty()`，但它要顶替 `sys.stdout`，就得能接住 `print()`——
+    issue_token 会先打印一句提示，只有 isatty() 的桩会炸成 AttributeError。
+    """
+    def __init__(self, tty): self._tty = tty; self.buf = []
     def isatty(self): return self._tty
+    def write(self, s): self.buf.append(s); return len(s)
+    def flush(self): pass
 
 @pytest.fixture
 def root(tmp_path, monkeypatch):
@@ -1117,6 +1139,16 @@ def test_expires(root, monkeypatch):
     U.issue_token(10)
     assert U.token_valid(now=time.time() + 9 * 60)
     assert not U.token_valid(now=time.time() + 11 * 60)      # 时间边界
+
+def test_minutes_out_of_range_refused(root, monkeypatch):
+    """没有"一直开着"的档位，也没有"开一整天"。"""
+    import sys
+    monkeypatch.setattr(sys, "stdout", _S(True))
+    monkeypatch.setattr(U, "_read_console_line", lambda: U.CONFIRM_PHRASE)
+    for bad in (0, -1, U.MAX_MINUTES + 1, 10.0, True, "10"):
+        with pytest.raises(SecretsError):
+            U.issue_token(bad)
+        assert not U.token_path().exists()
 
 def test_no_forever_option():
     import inspect
@@ -1185,8 +1217,11 @@ def _read_console_line() -> str:
 
 
 def issue_token(minutes: int) -> None:
-    if not isinstance(minutes, int) or not (1 <= minutes <= MAX_MINUTES):
-        raise SecretsError(f"minutes 必须在 1..{MAX_MINUTES} 之间（没有『一直开着』的档位）")
+    # bool 是 int 的子类，`1 <= True <= 60` 恒成立——不显式挡一下，一个 True 就能
+    # 从这道数值闸里溜过去。闸上不留"取决于调用方传了什么"的口子。
+    if isinstance(minutes, bool) or not isinstance(minutes, int) \
+            or not (1 <= minutes <= MAX_MINUTES):
+        raise SecretsError(f"minutes 必须是 1..{MAX_MINUTES} 的整数（没有『一直开着』的档位）")
     tty = getattr(sys.stdout, "isatty", None)
     if tty is None or not tty():
         raise SecretsError("unlock 只能由人在真实终端里敲。")
@@ -1206,7 +1241,7 @@ def issue_token(minutes: int) -> None:
 def token_valid(now: float | None = None) -> bool:
     """hook 每次工具调用都会问一次，必须便宜、且**永不抛**。
 
-    裸 read_text：走 guard.read_source_text 会命中 secrets 黑名单把 hook 自己挡死。
+    裸 read_text：走 guard 的读取入口会命中 secrets 黑名单把 hook 自己挡死。
     """
     try:
         raw = token_path().read_text(encoding="utf-8").strip()
