@@ -21,10 +21,21 @@ class SecretsError(RuntimeError):
 _ITEM_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
-def item_path(root: Path, item: str) -> Path:
-    """把 item 名解析成 secrets 根目录下的**直接普通文件**，别的一律拒。"""
+def check_item_name(item: str) -> str:
+    """item 名的**唯一**把关处。
+
+    独立成函数是因为不止一个调用方：`item_path`（要落到文件）和
+    `secrets_backend.parse_ref`（只解析引用、还不碰文件系统）都得用同一套判据。
+    复制一份正则过去就等于开了第二条口径，早晚分岔。
+    """
     if not isinstance(item, str) or not _ITEM_RE.match(item) or ".." in item:
         raise SecretsError(f"非法的 item 名 {item!r}：只接受 secrets 根下的直接文件名")
+    return item
+
+
+def item_path(root: Path, item: str) -> Path:
+    """把 item 名解析成 secrets 根目录下的**直接普通文件**，别的一律拒。"""
+    check_item_name(item)
     root = Path(root)
     p = root / f"{item}.md"
     if p.is_symlink():
