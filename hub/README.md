@@ -232,3 +232,29 @@ memory 走一条与 skill 不同的路:**skill 活链、memory 走上行收集 +
 平台 marketplace、安装、启用和卸载全部通过 Claude/Codex 官方 CLI；hub 不直接修改平台 cache、
 installed_plugins.json、known_marketplaces.json 或 Codex config.toml。本机刷新基线保存在
 `~/.hub/plugin-state.toml`，它是运行态，不进金库。
+
+## 密钥：引用式，不入库
+
+密钥本体只存 `~/.claude/secrets/<item>.md` 的 `## fields` 段，**从不进金库**（`hub/guard.py` 的硬闸）。
+别处一律只写引用：`hub://secrets/<item>/<field>`。
+
+- `py -3 -m hub.cli secrets exec <profile> [args]` —— **给 AI 的通道**。只能跑
+  `~/.hub/secrets-profiles.toml` 里预先声明好的 profile：启动链写死、子命令白名单、
+  尾参过语法校验、输出经精确遮罩。AI 能请求"上传/发布/提取"，拿不到密钥值。
+- `py -3 -m hub.cli secrets run --profile <p> -- <任意命令>` —— **只给人**，在真实终端里。
+- `py -3 -m hub.cli secrets render --profile <p>` —— **只给人**，`KEY=value` 打到终端。
+  **故意没有 `--out`**：给一个任意落点，等于重新造一份这套设计要消灭的下游明文副本。
+- `py -3 -m hub.cli secrets unlock --minutes N` —— **只给人**，需要在控制台键入确认短语。
+
+profile 是一份**声明**不是脚本：`argv` 是一条固定启动链，每段都是写死的绝对路径，
+首段必须 `.exe`（`.bat`/`.cmd` 一律拒——Windows 上批处理即使 `shell=False` 也经系统 shell 解析）。
+允许 `node.exe + 绝对入口脚本` 这种两段链：规则是**AI 不得控制解释器**，不是"禁止解释器"。
+
+Claude Code 侧挂了一个 PreToolUse 闸（`hub/hooks/secrets_guard.py`）：读密钥路径默认拒绝，
+写新密钥文件与持令牌读取弹窗确认，hook 自身出错一律 exit 2（退 1 是非阻断，工具照跑）。
+
+> **诚实边界。** 它约束的是 **Claude Code 原生工具的读取**——Codex / opencode 没有等价闸。
+> 它不防蓄意绕行、不防提示注入，也管不住已经进了上下文的明文。`run` / `render` / `unlock`
+> 三条 human-only 通道的承重闸长在**各自进程里**（`stdout.isatty()`，`unlock` 还要读 `CONIN$`）；
+> hook 的命令串匹配只是提示层——`hub` 不在 PATH 上，写法枚举不完。
+> 输出遮罩只做精确值匹配，**不是安全边界**；把密钥放进子进程环境也不是隔离。
