@@ -540,6 +540,13 @@ VSCE_PAT = "hub://secrets/vscode-marketplace-vsce/VSCE_PAT"
 `profiles_path() -> Path`；`load_profiles(path=None) -> dict[str, Profile]`；
 `check_argv(profile) -> None`；`check_args(profile, args) -> None`。
 
+> **实施修正（2026-08-11）**：初稿把 `-e` / `--eval=x` 塞进 `test_args_pattern_refuses`，
+> 但 `arg_pattern` 的字符类 `[A-Za-z0-9._/:@=+-]` 里本来就含 `-` 和 `=`，这两条当然过得去。
+> **不是收紧 pattern**——那会把 `--force`、`--out=x.vsix` 这些日常尾参一起废掉，闸迟早被摘。
+> 真正挡住 `-e` 的是**子命令白名单**（它只可能出现在 `args[0]`）；尾参里的 `-开头` 排在
+> 入口脚本之后，解释器根本看不到。测试拆成 `test_interpreter_flag_cannot_be_first`
+> 与 `test_option_like_tail_arg_allowed` 两条，把这个分工写死。
+
 - [ ] **Step 1: 写失败测试**
 
 ```python
@@ -607,11 +614,35 @@ def test_args_subcommand_whitelist(tmp_path):
     with pytest.raises(SecretsError):
         check_args(prof, [])                                     # 必须有子命令
 
-@pytest.mark.parametrize("bad", ["-e", "--eval=x", "a b", "a;b", "$(x)", "a\x00b", "a|b"])
+@pytest.mark.parametrize("bad", ["a b", "a;b", "$(x)", "a\x00b", "a|b"])
 def test_args_pattern_refuses(tmp_path, bad):
+    """arg_pattern 的职责只有一件：**不许出现空白与 shell 元字符**。"""
     prof = load_profiles(_write(tmp_path, OK.format(exe=_exe(tmp_path))))["demo"]
     with pytest.raises(SecretsError):
         check_args(prof, ["cp", bad])
+
+def test_interpreter_flag_cannot_be_first(tmp_path):
+    """`secrets exec vsce -e "..."` 必须被拒（spec §9 / plan T11 Step 4）。
+
+    挡住它的是**子命令白名单**——`-e` 只可能出现在 args[0]，而 args[0] 必须在白名单里。
+    不是 arg_pattern：plan 初稿把这两条用例塞进 test_args_pattern_refuses，
+    但那个 pattern 的字符类里本来就含 `-` 和 `=`，`-e` / `--eval=x` 当然能过。
+    """
+    prof = load_profiles(_write(tmp_path, OK.format(exe=_exe(tmp_path))))["demo"]
+    with pytest.raises(SecretsError):
+        check_args(prof, ["-e", "console.log(1)"])
+    with pytest.raises(SecretsError):
+        check_args(prof, ["--eval=x"])
+
+def test_option_like_tail_arg_allowed(tmp_path):
+    """尾部的 `--force` / `--out` 必须放行。
+
+    它们排在**入口脚本之后**，解释器根本看不到（node 只有在脚本路径之前才会把 -e 当 eval）。
+    真正守住"AI 不得控制解释器"的是固定启动链 + 子命令白名单；在这里一刀切禁 `-` 开头，
+    只会让 ossutil / vsce 的日常参数全废，闸就被摘掉了。
+    """
+    prof = load_profiles(_write(tmp_path, OK.format(exe=_exe(tmp_path))))["demo"]
+    check_args(prof, ["cp", "--force", "a.txt", "oss://b/"])    # 不抛
 ```
 
 - [ ] **Step 2: 运行确认失败**
@@ -691,7 +722,16 @@ def check_argv(profile: Profile) -> None:
 
 
 def check_args(profile: Profile, args: list[str]) -> None:
-    """尾部参数：首个必须落在子命令白名单里，其余每个都要过 arg_pattern。"""
+    """尾部参数：首个必须落在子命令白名单里，其余每个都要过 arg_pattern。
+
+    **两道闸分工不同，别指望 arg_pattern 挡解释器**：`-e` / `--eval=x` 这类东西只可能
+    出现在 args[0]，而 args[0] 必须命中子命令白名单——挡它的是白名单。arg_pattern 只管
+    "不许有空白与 shell 元字符"；它的字符类里本来就得含 `-` 和 `=`，否则 `--force`、
+    `--out=x.vsix` 这些日常尾参全废，闸就会被人摘掉。
+
+    尾参里出现 `-开头` 也不危险：它们排在**入口脚本之后**，解释器看不到
+    （node 只有在脚本路径之前才把 -e 当 eval）。
+    """
     if not args:
         raise SecretsError(f"profile {profile.name}：缺子命令")
     if args[0] not in profile.allow_subcommands:
@@ -1555,8 +1595,8 @@ def test_guard_has_no_exemption_parameter():
 - [ ] **Step 3: 记录 env 基线** —— 若某个 profile 因为缺环境变量起不来，把它**真正需要**的
       变量记进 profile 的 notes；这是将来把 `env` 从 inherit 收紧成白名单的依据。
 - [ ] **Step 4: 反向验收** —— 确认 `secrets exec` **跑不了**解释器：
-      `secrets exec vsce --help` 之外，试 `secrets exec vsce -e "console.log(process.env)"`
-      应当被 `check_args` 拒掉。
+      试 `secrets exec vsce -e "console.log(process.env)"` 应当被拒
+      （拒它的是**子命令白名单**，`-e` 落在 `args[0]` 上；见 T4 的实施修正）。
 
 ---
 
