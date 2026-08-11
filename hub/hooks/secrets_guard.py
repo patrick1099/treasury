@@ -44,12 +44,37 @@ def _token_valid() -> bool:
         return False
 
 
+def _safe_err(e) -> None:
+    """最后一道兜底的报错，**它自己绝不能抛**。
+
+    它跑在顶层 `except` 里：这里再抛一次，进程就带着**退出码 1** 死掉，而 exit 1 是
+    非阻断——闸从"拦得住"变成"崩了就放行"。所以写 bytes 而不是 `sys.stderr.write()`
+    （Windows 控制台是 cp936，中文会 UnicodeEncodeError），外面再套一层 except。
+    """
+    try:
+        msg = "hub secrets guard 自身出错，按拒绝处理：" + repr(e) + "\n"
+        sys.stderr.buffer.write(msg.encode("utf-8"))
+    except Exception:
+        pass
+
+
+def _write_json(obj) -> None:
+    """**必须写 UTF-8 字节，不能用 sys.stdout。**
+
+    Windows 上 `sys.stdout` 的编码跟随 locale（本机 cp936）。判定理由是中文，
+    走文本流轻则乱码、重则 UnicodeEncodeError——后者会把这次判定变成 exit 1，
+    也就是静默放行。跟 main() 里读 stdin 那条是对称的坑。
+    """
+    sys.stdout.buffer.write(json.dumps(obj, ensure_ascii=False).encode("utf-8"))
+    sys.stdout.buffer.flush()
+
+
 def _out(decision: str, reason: str) -> None:
-    json.dump({"hookSpecificOutput": {
+    _write_json({"hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "permissionDecision": decision,
         "permissionDecisionReason": reason,
-    }}, sys.stdout)
+    }})
 
 
 def _paths(tool: str, ti: dict):
@@ -103,7 +128,13 @@ def _decide_bash(cmd: str):
 
 
 def main() -> int:
-    payload = json.load(sys.stdin)
+    # **按 UTF-8 字节读，不能用 json.load(sys.stdin)。**
+    # Claude Code 送的 payload 是 UTF-8；Windows 上 sys.stdin 却按 locale（本机 cp936）
+    # 解码，只要 payload 里有一个中文字符就 JSONDecodeError → 顶层转 exit 2 → 工具被拦。
+    # 2026-08-11 真机上第一次挂上闸，第一条带中文的 Write 就被自己拦死了。
+    # 单测没抓住是因为 subprocess(text=True) 两头用的是同一个 locale 编码，自洽了；
+    # 现在的测试一律喂**原始 UTF-8 字节**。
+    payload = json.loads(sys.stdin.buffer.read().decode("utf-8", "replace"))
     tool = payload.get("tool_name") or ""
     ti = payload.get("tool_input") or {}
     if not isinstance(ti, dict):
@@ -140,5 +171,5 @@ if __name__ == "__main__":
         raise
     except BaseException as e:
         # 任何没接住的异常都必须变成 exit 2。退 1 = 静默放行。
-        sys.stderr.write(f"hub secrets guard 自身出错，按拒绝处理：{e!r}\n")
+        _safe_err(e)
         raise SystemExit(2)

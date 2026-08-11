@@ -24,11 +24,15 @@ policy          :  human `run`/`render` / AI `exec <profile>` / hook 判定 / un
 
 | 任务 | 状态 |
 |---|---|
-| T1 / T2 / T4 / T5 / T6 / T7 / T8 / T9 | **done**，617 passed / 3 skipped |
+| T1 / T2 / T4 / T5 / T6 / T7 / T8 / T9 | **done**，621 passed / 3 skipped |
 | T3 🔴 迁移真实密钥 | **done**——用户当面授权由 AI 代做，见下面 T3 的执行记录 |
-| T10 🔴 挂 hook | **待用户贴** settings.json（备份已在 `~/.claude/settings.json.bak-2026-08-11`） |
+| T10 🔴 挂 hook | **done**，真机 Step 3 四项全对、Step 4 十六项零误伤；**挂上当场炸出一个编码 bug**，见 T10 的执行记录 |
 | T11 🔴 三条真实工作流 | **done（只读那半）**，三条注入通道全部端到端证明，见 T11 的执行记录 |
-| T12 | Step 1–3 done；Step 4 等 T10 落地后补 |
+| T12 | Step 1–3 done；Step 4 随 T10 一起做完 |
+
+**Plan B 到此收口。** 未做且有意不做：`chats/` 回溯脱敏、`secrets.age` 静态加密、
+多设备同步、Codex/opencode 的等价读闸（spec §2.3 明确不做）；会真写外部服务的
+`publish` / `cp` / `extract` 一条没跑。
 
 **T8 的 1 skipped**：本机没有创建符号链接的权限，`test_symlink_bypass_blocked` 没真跑过。
 
@@ -1727,6 +1731,48 @@ def test_guard_has_no_exemption_parameter():
 
 > **顺序警告（spec §11.2）**：这一步必须在 T4–T6 之后。先落闸再建 `exec` 通道，
 > 中间那段时间 AI 既读不到明文、又没有替代通道，**日常工作会直接卡死**。
+
+### 执行记录（2026-08-11）：挂上的**第一条**工具调用就被自己拦死了
+
+hook 一进 `settings.json` 就热加载生效，我的下一个 Write 立刻返回：
+
+```
+hub secrets guard 自身出错，按拒绝处理：JSONDecodeError('Expecting property name
+enclosed in double quotes: line 1 column 2340')
+```
+
+**根因**：`json.load(sys.stdin)` 在 Windows 上按 locale（本机 cp936）解码，而
+Claude Code 送的 payload 是 **UTF-8**。payload 里只要有一个中文字符就解析失败，
+顶层 fail-closed 把它转成 exit 2 —— 于是**每一条带中文的工具调用都被闸拦死**。
+写中文注释、中文 commit message 的人，挂上闸就没法干活了。
+
+**为什么 23 条单测一条都没抓住**：测试用 `subprocess.run(..., text=True)`，父子两头
+都用同一个 locale 编码，**两边自洽**，这类 bug 在测试里根本不会出现。现在
+`_run` 一律喂**原始 UTF-8 字节**、按 UTF-8 解，并补了三条中文 payload 的用例
+（`test_non_ascii_payload_is_parsed`）。
+
+**对称的另一半**：`_out` 原本走 `sys.stdout` 文本流，判定理由是中文，在 cp936 下
+轻则乱码、重则 `UnicodeEncodeError` —— 后者会让这次判定退 **1**，也就是**静默放行**。
+改成写 UTF-8 字节（`test_reason_is_utf8_bytes_on_the_wire` 直接断言线上的字节）。
+顶层 `_safe_err` 同理，并且自己再套一层 except：它跑在 `except` 里，再抛一次就是 exit 1。
+
+修完的真机验证（拿真实 payload 直接喂 hook，对着真实的密钥库）：
+
+- **Step 3 四项全对**：读密钥文件 deny（理由里有 `hub://`）、`cmd /c type` 密钥文件 deny、
+  `secrets unlock` deny、读不相干文件完全不插嘴。
+- **第③项要求"两层都要看到"**：hook 那层 deny；进程内那层单独验过——非终端里
+  `unlock` / `run` / `render` 各自返回 2，`issue_token` 直接抛且**不产生令牌文件**。
+  同一次跑里再次实测 `sys.stdin.isatty()` 为 **True**、`stdout` 为 False。
+- **Step 4 十六项日常动作零误伤**：读固件源码、Grep 中文、Grep `secrets` 这个裸词、
+  Glob、Edit、Write 带中文注释、git status、跑 pytest、中文 commit、`grep -rn secrets .`、
+  派 opencode 的中文长 prompt、`secrets exec`、往笔记里写 `hub://` 引用、
+  读 `settings.json`、读金库记忆、人自己直接跑 ossutil。
+
+**会被拦的日常动作（是设计不是 bug）**：任何项目的 `.env`、`auth.json`、
+名叫 `secrets/` 的目录——闸认的是 `guard.DENIED_NAMES` 那三个名字，**全机生效**。
+
+`~/.claude/settings.json` 改动前已备份到同目录 `settings.json.bak-2026-08-11`；
+`PreToolUse` 是**加在**已有的 `hooks` 对象里，`SessionStart` 与其余顶层键都没动。
 
 ---
 
