@@ -20,6 +20,18 @@ policy          :  human `run`/`render` / AI `exec <profile>` / hook 判定 / un
 
 ---
 
+## 进度（2026-08-11）
+
+| 任务 | 状态 |
+|---|---|
+| T1 / T2 / T4 / T5 / T6 / T7 / T8 / T9 | **done**，617 passed / 3 skipped |
+| T3 🔴 迁移真实密钥 | **done**——用户当面授权由 AI 代做，见下面 T3 的执行记录 |
+| T10 🔴 挂 hook | **待用户贴** settings.json（备份已在 `~/.claude/settings.json.bak-2026-08-11`） |
+| T11 🔴 三条真实工作流 | **done（只读那半）**，三条注入通道全部端到端证明，见 T11 的执行记录 |
+| T12 | Step 1–3 done；Step 4 等 T10 落地后补 |
+
+**T8 的 1 skipped**：本机没有创建符号链接的权限，`test_symlink_bypass_blocked` 没真跑过。
+
 ## Global Constraints
 
 - **威胁模型（spec §2.1）**：防的是**会犯错的**AI，不是蓄意绕行的 AI，也不是提示注入。
@@ -504,6 +516,35 @@ py -3 -c "from pathlib import Path; from hub.secrets_store import load_item, ite
 
 > **给 AI 的边界**：这一步完成前不要往下走 T5/T12；这一步过程中**不要**为了"帮忙确认"
 > 去读那三个文件。
+
+### 执行记录（2026-08-11）：**用户当面授权改由 AI 代做**
+
+我先按本节拒绝并把说明交给用户，用户明确说了两次要我自己做。**上面那条"人工闸"的判断
+本身没被推翻**——推翻它的是用户的决定，所以照做，但把它替换成一条等价强度的机器约束：
+
+> **值一次都不进对话 transcript。** 全程不用 Read 工具，所有处理都在一个 python 进程里；
+> 脚本的输出只有三类——文件名、字段名、布尔校验结果。探结构时的唯一遮罩规则是
+> **"任何以空白分隔、长度 ≥20 的 token 一律换成 `<REDACTED:n>`"**，只有这一条、没有分支
+> （§1.3 那次事故正是"只打印结构"的东西漏了一条分支）。本机四类密钥长度 24/30/84/402
+> 都远在阈值之上，而 `accessKeyId`(11)、`accessKeySecret`(15)、`VSCE_PAT`(8) 都在之下。
+> **异常只打 `type(e).__name__`**，不打消息——消息里可能嵌着文件内容。
+
+这条路子还顺带比人手工做更强：值是 `str` 变量原样搬运，**结构上不可能打错一个字符**，
+而"复制粘贴别手敲"那条要求本来就是在防手滑。
+
+落盘前先 dry-run 出遮罩预览，五项校验逐文件过：字段名对得上 / 解析回来逐字符相同 /
+每个值在新文件里只出现一次 / notes 段里没有残留 / 值来自原文件未被改写。
+落盘后再拿 `.bak-2026-08-11/` 独立复核一遍"值在备份原文里逐字出现"。
+
+结果：`aliyun-oss-picgo → [accessKeyId, accessKeySecret]`、`mineru-api → [token]`、
+`vscode-marketplace-vsce → [VSCE_PAT]`。
+
+两处顺手修的：① 备份最初落在 `~/.claude/secrets-bak-…`，**那个目录名不等于 `secrets`，
+`guard.is_denied` 判不出来**，等于把全部明文复制到了闸外面——已挪进
+`~/.claude/secrets/.bak-2026-08-11/`（点开头，`iter_items` 不会当成密钥，闸也盖得住）。
+② vsce 正文里的 `VSCE_PAT=<下面的值>` 在值搬走之后成了悬空指代，改成指向 `## fields`。
+
+`INDEX.md` 已补一节"格式：`## fields` 段 + `hub://` 引用"，含四条命令的分工。
 
 ---
 
@@ -1705,6 +1746,35 @@ def test_guard_has_no_exemption_parameter():
 - [ ] **Step 4: 反向验收** —— 确认 `secrets exec` **跑不了**解释器：
       试 `secrets exec vsce -e "console.log(process.env)"` 应当被拒
       （拒它的是**子命令白名单**，`-e` 落在 `args[0]` 上；见 T4 的实施修正）。
+
+### 执行记录（2026-08-11）：只读那半全部跑通，注入端到端证明
+
+三个 profile 都已写进 `~/.hub/secrets-profiles.toml` 并过 `check_argv`。
+ossutil 和 mineru 都是**单段原生 exe**（mineru 的 npm 包只是启动器，实体在
+`node_modules/mineru-open-api/node_modules/mineru-open-api-win32-x64/bin/*.exe`）；
+只有 vsce 是 `node.exe + 绝对入口脚本` 的两段链。
+
+**"跑通了"不等于"注入生效"**——这是本步最容易糊弄过去的地方。`secrets exec ossutil ls`
+第一次就成功了，但那是因为 `~/.ossutilconfig` 里本来就存着 AK/SK。只有把那条旁路掐掉，
+成功才说明问题。三条各自的对照实验：
+
+| profile | 掐掉旁路的办法 | 不注入 | 经 hub 注入 |
+|---|---|---|---|
+| ossutil | `--config-file <空文件> --region cn-beijing` | `Credentials is null or empty` | 正常列出对象 |
+| vsce | 无旁路可掐（PAT 只从 env 读） | — | `verify-pat patrick1099` 验证通过 |
+| mineru | `USERPROFILE`/`HOME` 指到空目录，绕开 `~/.mineru/config.yaml` | `no API token found` | 过了认证，拿到服务端的 `task not found` |
+
+反向验收：`exec vsce -e …` 与 `exec vsce --eval=1` 都被子命令白名单拒掉。
+
+**Step 3 的 env 基线 + 一条本该早发现的事**：查下来 `~/.ossutilconfig`（`accessKeyID` /
+`accessKeySecret`）和 `~/.mineru/config.yaml`（`token`）**各是一份下游明文副本**——
+正是 §1.2 要消灭的那种东西。两条都已写进对应密钥文件的 `## notes`。
+env 通道既然已验证可行，这两份副本可以清掉（ossutil 那份留 region/endpoint 即可），
+**但那会影响用户现有的直接 `ossutil` 用法和 img2md 脚本，留给用户定，AI 不擅自动。**
+`MINERU_TOKEN` 这个变量名是从 exe 的字符串里核实出来的，不是猜的。
+
+未做：`vsce publish` / `ossutil cp` / `mineru extract` 这些**会真的写外部服务**的，
+一条没跑。
 
 ---
 
