@@ -26,6 +26,7 @@ from hub.fslink import LinkError
 from hub.vaultpaths import SharedSkillsEscape
 from hub.hubconfig import read_config, write_config, check_config, ConfigConflict
 from hub.memread import read_memory, MemoryNotInView
+from hub.secrets_cli import cmd_exec, cmd_render, cmd_run, cmd_unlock
 from hub.memview import ViewScopeError, SharedMemoryError
 from hub.memwire import prepare_memory_views, commit_memory_views
 from hub.textblock import BlockError
@@ -530,6 +531,32 @@ def build_parser() -> argparse.ArgumentParser:
     mr.add_argument("--tool", required=True, choices=["claude", "codex", "opencode"])
     mr.add_argument("--name", required=True)
     mr.set_defaults(func=_cmd_memory_read)
+
+    # secrets：**不带 parents=[common]**。密钥库在 ~/.claude/secrets/，与金库无关，
+    # 不该跟着吃一个 required 的 --vault。
+    sec = sub.add_parser("secrets", help="密钥：本体只存一处，别处只写 hub:// 引用")
+    ssub = sec.add_subparsers(dest="subcmd", required=True)
+
+    se = ssub.add_parser("exec", help="给 AI 的通道：只能跑预先声明好的 profile")
+    se.add_argument("profile")
+    # REMAINDER 而不是 "*"：尾参里的 --force / --out=x 必须原样透传给目标程序，
+    # 不能被 hub 自己的 argparse 抢走。
+    se.add_argument("args", nargs=argparse.REMAINDER)
+    se.set_defaults(func=cmd_exec)
+
+    sr = ssub.add_parser("run", help="只给人：在真实终端里，用某 profile 的密钥跑任意命令")
+    sr.add_argument("--profile", required=True)
+    sr.add_argument("argv", nargs=argparse.REMAINDER)
+    sr.set_defaults(func=cmd_run)
+
+    srd = ssub.add_parser("render",
+                          help="只给人：把某 profile 的密钥以 KEY=value 打到终端（没有 --out）")
+    srd.add_argument("--profile", required=True)
+    srd.set_defaults(func=cmd_render)
+
+    su = ssub.add_parser("unlock", help="只给人：需要在控制台键入确认短语")
+    su.add_argument("--minutes", type=int, default=10)
+    su.set_defaults(func=cmd_unlock)
     return p
 
 def _make_console_output_tolerant() -> None:

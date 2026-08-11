@@ -947,6 +947,17 @@ def run_profile(profile: Profile, args: list[str], secrets_root: Path,
 **Interfaces (Produces):** `human_only() -> None`（`sys.stdout.isatty()` 为假即抛）；
 `cmd_exec/cmd_run/cmd_render/cmd_unlock`；`hub secrets ...` 子命令挂进 `build_parser()`。
 
+> **实施补全（2026-08-11）**——初稿的 Step 3/4 只给了骨架，几处得当场定死：
+> ① **`render` 初稿根本没接进 argparse**（Step 4 只有 exec/run/unlock），现已接上，
+> 形态是 `secrets render --profile NAME`，把该 profile 的密钥以 `KEY=value` 打到**终端**，
+> **不提供 `--out`**——spec §5.4 那个洞的修法不是"校验落点"，是根本不给这个参数。
+> ② **`run` 的密钥从哪来**：初稿没说。定为 `secrets run --profile NAME -- <任意命令>`，
+> 复用 profile 已声明的 `env` 映射，不新增语法。它 **stdio 直通、不捕获也不遮罩**——
+> 遮罩是给 `exec` 那条通道的，对着人遮没意义；这条的全部安全性来自 `human_only()`。
+> ③ **`exec` 的尾参必须用 `argparse.REMAINDER` 而不是 `nargs="*"`**，否则
+> `secrets exec ossutil cp --force a` 里的 `--force` 会被 hub 自己的 argparse 抢走。
+> ④ `cmd_unlock` 不重复 `human_only()`——承重闸在 `issue_token` 的 `CONIN$` 那一道。
+
 - [ ] **Step 1: 写失败测试**
 
 ```python
@@ -1045,13 +1056,30 @@ def cmd_exec(args) -> int:
       密钥库与金库无关，别跟着 `common` 走）：
 
 ```python
-    sec = sub.add_parser("secrets")
+    # secrets：**不带 parents=[common]**。密钥库在 ~/.claude/secrets/，与金库无关，
+    # 不该跟着吃一个 required 的 --vault。
+    sec = sub.add_parser("secrets", help="密钥：本体只存一处，别处只写 hub:// 引用")
     ssub = sec.add_subparsers(dest="subcmd", required=True)
-    se = ssub.add_parser("exec"); se.add_argument("profile"); se.add_argument("args", nargs="*")
+
+    se = ssub.add_parser("exec", help="给 AI 的通道：只能跑预先声明好的 profile")
+    se.add_argument("profile")
+    # REMAINDER 而不是 "*"：尾参里的 --force / --out=x 必须原样透传给目标程序，
+    # 不能被 hub 自己的 argparse 抢走。
+    se.add_argument("args", nargs=argparse.REMAINDER)
     se.set_defaults(func=cmd_exec)
-    sr = ssub.add_parser("run"); sr.add_argument("argv", nargs=argparse.REMAINDER)
+
+    sr = ssub.add_parser("run", help="只给人：在真实终端里，用某 profile 的密钥跑任意命令")
+    sr.add_argument("--profile", required=True)
+    sr.add_argument("argv", nargs=argparse.REMAINDER)
     sr.set_defaults(func=cmd_run)
-    su = ssub.add_parser("unlock"); su.add_argument("--minutes", type=int, default=10)
+
+    srd = ssub.add_parser("render",
+                          help="只给人：把某 profile 的密钥以 KEY=value 打到终端（没有 --out）")
+    srd.add_argument("--profile", required=True)
+    srd.set_defaults(func=cmd_render)
+
+    su = ssub.add_parser("unlock", help="只给人：需要在控制台键入确认短语")
+    su.add_argument("--minutes", type=int, default=10)
     su.set_defaults(func=cmd_unlock)
 ```
 
