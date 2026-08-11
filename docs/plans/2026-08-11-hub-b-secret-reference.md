@@ -1302,6 +1302,20 @@ Test `tests/hub/test_secrets_hook.py`。
 | Bash 命中 `secrets exec` | allow |
 | hook 自身出错 | **exit 2** |
 
+> **实施修正（2026-08-11）**，三处：
+> ① **`hub://secrets/<item>/<field>` 会被 `is_denied` 判成命中**（它的字面 parts 里
+> 就有一个 `secrets`）。实测：`is_denied(Path("hub://secrets/demo/k1")) → True`。
+> 于是任何在命令串里写引用的动作——正是本项目要推广的那个写法——都会被拒，
+> 拦的是自己的正解。修法：`_looks_like_path` 先摘掉带 scheme 的 token，**URI 不是路径**。
+> （`oss://`、`https://` 本来就不命中，只有 `hub://secrets/…` 踩雷，所以特别隐蔽。）
+> ② 初稿 `_paths` 用 `ti.get(key)` + `isinstance` 静默跳过非字符串，于是
+> `test_guard_exception_exits_2`（`file_path: None`）根本不会崩，那条测试永远红。
+> 改成**字段在但不是字符串就抛**，由顶层转 exit 2——判不了就拒。
+> ③ `_token_valid` 的注释里不能把 guard 那个读取函数名写全，
+> `test_hook_does_not_import_backend` 断言的是"整份源码里不出现它"。
+>
+> 另补两条测试：令牌**过期**与令牌**读不懂**都必须仍然 deny（读不懂 ≠ 有效）。
+
 - [ ] **Step 1: 写失败测试**
 
 ```python
@@ -1439,11 +1453,13 @@ def test_hook_does_not_import_backend():
 **只按路径拦，绝不按内容模式拦**（spec §6.4）：secrets_scan 的误报率高到不能当闸。
 """
 import json
+import re
 import sys
 from pathlib import Path
 
 # 只 import guard（纯 stdlib 依赖）。每次工具调用都跑，别把 hub 的其余部分拖进来；
-# 尤其**绝不 import secrets_backend**——那是读明文的一层。
+# 尤其**绝不 import 明文解析层**。（这句不能把那个模块名写全：
+# test_hook_does_not_import_backend 断言的正是"整份源码里不出现它"。）
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from hub.guard import is_denied                                    # noqa: E402
 
@@ -1452,9 +1468,12 @@ _DENY_SUB = ("run", "render", "unlock")
 # 承重闸在 secrets_cli.human_only / secrets_unlock.issue_token 里。
 _CMD_HINTS = ("hub secrets", "hub.cli secrets", "cli.py secrets", "secrets_cli")
 
+# `hub://…`、`oss://…`、`https://…` 都不是文件系统路径。
+_URI_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
+
 
 def _token_valid() -> bool:
-    """裸读，**不走 guard.read_source_text**——那会命中 secrets 黑名单把自己挡死。"""
+    """裸读，**不走 guard 的读取入口**——那会命中 secrets 黑名单把自己挡死。"""
     import time
     import os
     try:
@@ -1478,20 +1497,32 @@ def _paths(tool: str, ti: dict):
     **绝不要把 Grep 的 `pattern` 算进来**：`Path("secrets")` 会命中 has_denied_component，
     于是任何"搜一下 secrets 这个词"都被拒——那是纯误伤。误伤会逼人把闸摘掉，
     闸就废了（secrets_scan.py 用学费换来的那条结论，spec §6.4）。
+
+    字段**在但不是字符串**时抛，让顶层转成 exit 2：判不了就拒，不是判不了就放行。
     """
     for key in ("file_path", "path", "notebook_path"):
-        v = ti.get(key)
-        if isinstance(v, str) and v:
+        if key not in ti:
+            continue
+        v = ti[key]
+        if not isinstance(v, str):
+            raise ValueError(f"{key} 不是字符串（{type(v).__name__}），判定不了")
+        if v:
             yield v
 
 
 def _looks_like_path(tok: str) -> bool:
-    """只有**带分隔符**的 token 才当路径查。
+    """只有**带分隔符、且不是 URI** 的 token 才当路径查。
 
-    否则 `grep -r secrets .` 里那个裸词 `secrets` 会被 is_denied 判成命中 —— 又是误伤。
-    代价是：cwd 恰好在 secrets/ 里时敲裸文件名查不出来。**这是有意接受的漏**，
-    宁可漏也不能误伤（同上）。
+    两条都是为了不误伤：
+
+    - 没有分隔符的裸词要放过，否则 `grep -r secrets .` 里那个 `secrets` 会被
+      is_denied 判成命中。代价是 cwd 恰好在 secrets/ 里时敲裸文件名查不出来，
+      **这是有意接受的漏**。
+    - 带 scheme 的 token 要放过，否则 `hub://secrets/<item>/<field>` 会被判成命中——
+      而那正是本项目要推广的引用写法，拦它等于冲着自己的正解开枪。
     """
+    if _URI_RE.match(tok):
+        return False
     return "/" in tok or "\\" in tok
 
 
@@ -1514,6 +1545,8 @@ def main() -> int:
     payload = json.load(sys.stdin)
     tool = payload.get("tool_name") or ""
     ti = payload.get("tool_input") or {}
+    if not isinstance(ti, dict):
+        raise ValueError(f"tool_input 不是对象（{type(ti).__name__}），判定不了")
 
     if tool == "Bash":
         got = _decide_bash(str(ti.get("command") or ""))
