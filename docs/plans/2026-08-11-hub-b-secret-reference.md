@@ -199,10 +199,21 @@ class SecretsError(RuntimeError):
 _ITEM_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
-def item_path(root: Path, item: str) -> Path:
-    """把 item 名解析成 secrets 根目录下的**直接普通文件**，别的一律拒。"""
+def check_item_name(item: str) -> str:
+    """item 名的**唯一**把关处。
+
+    独立成函数是因为不止一个调用方：`item_path`（要落到文件）和
+    `secrets_backend.parse_ref`（只解析引用、还不碰文件系统）都得用同一套判据。
+    复制一份正则过去就等于开了第二条口径，早晚分岔。
+    """
     if not isinstance(item, str) or not _ITEM_RE.match(item) or ".." in item:
         raise SecretsError(f"非法的 item 名 {item!r}：只接受 secrets 根下的直接文件名")
+    return item
+
+
+def item_path(root: Path, item: str) -> Path:
+    """把 item 名解析成 secrets 根目录下的**直接普通文件**，别的一律拒。"""
+    check_item_name(item)
     root = Path(root)
     p = root / f"{item}.md"
     if p.is_symlink():
@@ -283,6 +294,12 @@ def iter_items(root: Path) -> list[str]:
 
 **Interfaces (Produces):** `parse_ref(ref) -> tuple[str, str]`；`resolve_ref(root, ref) -> str`；
 `resolve_env(root, mapping) -> dict[str, str]`；`secrets_root() -> Path`。
+
+> **实施修正（2026-08-11）**：初稿的 `parse_ref` 注释写着「item 的合法性交给
+> `item_path` 统一把关」，于是 `hub://secrets/.unlock/token` 在 `parse_ref` 这一层不抛，
+> 与自己的 `test_parse_refuses` 用例直接掐架。**修法不是在 `parse_ref` 里复制一份正则**
+> ——那就变成两条口径了——而是把判据提成 `secrets_store.check_item_name()`，
+> `item_path` 与 `parse_ref` 共用（T1 的代码块已同步）。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -374,7 +391,7 @@ import os
 import re
 from pathlib import Path
 
-from hub.secrets_store import SecretsError, load_item
+from hub.secrets_store import SecretsError, check_item_name, load_item
 
 _PREFIX = "hub://secrets/"
 _VAR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -394,9 +411,12 @@ def parse_ref(ref: str) -> tuple[str, str]:
     if len(parts) != 2 or not parts[0] or not parts[1]:
         raise SecretsError(f"引用形状必须是 hub://secrets/<item>/<field>：{ref!r}")
     item, field = parts
+    # item 名走 secrets_store 那一处唯一判据（`.unlock` 这类点开头的在这里就被拒，
+    # 不必等到 resolve_ref 去碰文件系统才发现）。
+    check_item_name(item)
     if not _VAR_RE.match(field.replace("-", "_")):
         raise SecretsError(f"非法的字段名：{ref!r}")
-    return item, field           # item 的合法性交给 secrets_store.item_path 统一把关
+    return item, field
 
 
 def resolve_ref(root: Path, ref: str) -> str:
