@@ -19,7 +19,7 @@
 |---|---|---|
 | **A 提取器**（`hub/`） | 把本机家当收进金库（记忆 / 自写 skill / 自写插件仓快照 / agents 配置） | **已做完，合进 main**，218 测试，真金库已装 49 记忆 + 30 skill + 6 插件快照 |
 | **C 加载器 skill** | 把金库装回工具、本地一处改到处新、跨设备人工闸门、符号根展开 | **没开始**——这是现在最大的开口，也是"本地发现+分发"这个首要需求的落点 |
-| **B 引用层** | 密钥本体只存一处，别处只出现 `hub://` 引用，执行时注入；Claude Code 原生工具的读取受 guardrail 约束 | **基本落地**（617 测试全绿）：代码八项 + T3 三个真实密钥已迁成 `## fields` 格式 + T11 三条注入通道端到端证明（ossutil / vsce / mineru，各自掐掉配置文件旁路做过对照实验）。**只剩 T10**：把 PreToolUse hook 贴进 `~/.claude/settings.json` 并做真机四项验证。另发现两份下游明文副本（`~/.ossutilconfig`、`~/.mineru/config.yaml`），已记进对应密钥文件的 notes，清不清由用户定。见 `docs/plans/2026-08-11-hub-b-secret-reference.md`。原「加密层」定位已废——加密只管静态存储，管不住合法解密后的泄漏 |
+| **B 引用层** | 密钥本体只存一处，别处只出现 `hub://` 引用，执行时注入；Claude Code 原生工具的读取受 guardrail 约束 | **已落地**（621 测试全绿）：代码八项 + 三个真实密钥已迁成 `## fields` 格式 + 三条注入通道端到端证明（ossutil / vsce / mineru，各自掐掉配置文件旁路做过对照实验）+ PreToolUse 闸已挂进 `~/.claude/settings.json` 并真机验过（Step 3 四项全对、Step 4 十六项零误伤；挂上当场炸出一个 stdin/stdout 编码 bug，已修并补测）。遗留：发现两份下游明文副本（`~/.ossutilconfig`、`~/.mineru/config.yaml`），已记进对应密钥文件的 notes，清不清由用户定。见 `docs/plans/2026-08-11-hub-b-secret-reference.md`。原「加密层」定位已废——加密只管静态存储，管不住合法解密后的泄漏 |
 
 ---
 
