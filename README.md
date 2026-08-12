@@ -1,9 +1,15 @@
-# ai-cli-migrate
+# treasury
 
-换电脑时迁移 Claude Code 和 Codex 的全部个人数据。纯 Python 标准库,Windows 用 `py -3`,不装任何依赖。
+跨工具/设备的个人 AI 数据层。两块:
+
+- **`hub/`** —— 数据层本体(共享金库 `treasury-vault` 的采集/分发/校验)。用法见 [`hub/README.md`](hub/README.md)。
+- **顶层四件套** —— 换电脑时迁移 Claude Code 和 Codex 的全部个人数据,即下面这份说明。
+
+纯 Python 标准库,Windows 用 `py -3`,不装任何依赖。
 
 ```
-ai-cli-migrate/
+treasury/
+├── hub/                跨工具/设备共享数据层(见 hub/README.md)
 ├── migrate.py          统一入口(一条命令同时处理两者)
 ├── claude_migrate.py   Claude Code: ~/.claude
 ├── codex_migrate.py    Codex: ~/.codex
@@ -15,7 +21,7 @@ ai-cli-migrate/
 
 ```powershell
 py -3 migrate.py status                     # 看本机装了哪个、多大
-py -3 migrate.py export                      # 同时导出两者(默认存到 ai-cli-migrate 目录)
+py -3 migrate.py export                      # 同时导出两者(默认存到 treasury 目录)
 py -3 migrate.py export --out-dir D:\bak     # 指定输出目录
 py -3 migrate.py export --include-logs        # Codex 连 logs 一起(默认不带)
 py -3 migrate.py import --claude claude-backup-XXXX.zip --codex codex-backup-XXXX.zip
@@ -29,7 +35,7 @@ py -3 migrate.py import --claude <c.zip> --remap-path "<repo-root>\Desktop\proj"
 导出两者 + 工具源码 + 迁移说明,打成一个 `ai-cli-迁移包-日期.zip` 放到桌面。
 新机解压,照包里的 `迁移说明.md` 跑 `import` 即可。
 
-导出得到两个包:`claude-backup-<时间戳>.zip`、`codex-backup-<时间戳>.zip`,默认就存在本工具目录(`ai-cli-migrate/`)下,已被 `.gitignore` 排除不会进仓库。两者都不含登录凭证,新机导入后各自重新 `/login`。
+导出得到两个包:`claude-backup-<时间戳>.zip`、`codex-backup-<时间戳>.zip`,默认就存在本工具目录(`treasury/`)下,已被 `.gitignore` 排除不会进仓库。两者都不含登录凭证,新机导入后各自重新 `/login`。
 
 ## 各迁了什么 / 不迁什么
 

@@ -41,7 +41,7 @@ def write_install_guide(dest):
     """写一份面向新电脑的安装/迁移说明到包内。"""
     guide = """# 迁移说明(新电脑上照这个做)
 
-这个包是用 `ai-cli-migrate` 工具从旧电脑导出的,里面有 **Claude Code + Codex 的全部
+这个包是用 `treasury` 工具从旧电脑导出的,里面有 **Claude Code + Codex 的全部
 个人数据**(聊天记录、memory、skills、plugins、MCP 配置等),以及工具源码本身。
 
 > 不含登录凭证 —— 新机装好后两边都要重新 `/login`。
