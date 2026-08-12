@@ -115,7 +115,7 @@ def main():
     ps.set_defaults(func=cmd_status)
 
     pe = sub.add_parser("export", help="导出两者")
-    pe.add_argument("--out-dir", help="输出目录,默认 ai-cli-migrate 工具目录")
+    pe.add_argument("--out-dir", help="输出目录,默认 treasury 工具目录")
     pe.add_argument("--include-logs", action="store_true", help="Codex 一并打包 logs_*.sqlite")
     pe.add_argument("--no-history", action="store_true", help="Claude 不含聊天记录")
     pe.add_argument("--only", choices=["claude", "codex"], help="只导出其中一个")

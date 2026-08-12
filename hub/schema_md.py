@@ -462,7 +462,7 @@ xu-local = "directory:C:\\\\Users\\\\x\\\\.claude\\\\plugins-dev"
 
 `shared/` 是所有"项目无关、每机都同步"基础设施的**唯一稳态活源**：改/commit/push 都从这里发生。
 
-**三分跟踪**：父仓（hub-vault）跟踪产物源码文件；**排除每个产物内的嵌套 `.git/`**（一个 `shared/<类>/<name>`
+**三分跟踪**：父仓（treasury-vault）跟踪产物源码文件；**排除每个产物内的嵌套 `.git/`**（一个 `shared/<类>/<name>`
 可以自身是独立 git 仓）；密钥/token/auth **永不进 shared**，留本机私密区。
 
 **通用 induction**：把带 `.git` 的产物首次纳入父仓跟踪时，hub 会临时把该产物的 `.git` 移到父仓 git admin 目录、
