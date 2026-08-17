@@ -13,6 +13,7 @@ from pathlib import Path
 
 from hub.guard import check_source, has_denied_component, is_denied
 from hub import fslink        # fslink 只依赖 stdlib，无循环导入
+from hub.digest import Digest, SourceChangedWhileCopying, copy_and_digest, digest_bytes
 
 class Writer:
     def __init__(self, dry_run: bool = False):
@@ -38,6 +39,88 @@ class Writer:
         src = Path(src)
         check_source(src)
         self.write_text(dest, src.read_text(encoding="utf-8"))
+
+    def copy_binary(self, src: Path, dest: Path) -> Digest | None:
+        """把源文件**字节级原样**拷进金库,返回实际落盘字节的摘要(dry-run 返回 None)。
+
+        为什么不能用 copy_file 干这件事:它走 read_text() + write_text(),而 write_text
+        **会沿用目标已有的换行风格重写**(见下)。对记忆/CLAUDE.md 那是对的(省掉整文件
+        重写的 diff 噪音);对原始对话证据是错的:改了字节,金库这份 sha 就不再等于源的
+        sha,append-only 幂等判据当场失效、每次收集都重写一遍;且整个文件读进内存(实测
+        单会话最大 35 MB,Codex 总量 678 MB);遇到非法编码还直接抛,而证据库的承诺是
+        "原样保存"不是"保存我们能解码的那部分"。所以这一层不做任何换行/编码处理。
+
+        原子写的原因(§6.1,评审逮的真 bug):直接以 wb 打开目标,复制中途失败/断电就把
+        唯一一份旧证据截断了。这里走同目录唯一临时文件 + copy_and_digest 边拷边算 +
+        拷贝前后各 stat 一次源((size, mtime_ns) 变了说明源还在被追加,重试一次仍变就
+        抛 SourceChangedWhileCopying)+ flush/fsync + os.replace 原子替换。摘要是对
+        **实际写进去的字节**算的 —— "先 hash 源再 copy"那两步之间源还会被追加,台账
+        sha 会跟落盘字节对不上。任何异常都在退出前清掉临时文件。
+
+        dry-run 闸在写之前;check_source 拦的是**读**,因此在 dry-run 下同样生效。
+        """
+        src, dest = Path(src), Path(dest)
+        check_source(src)
+        self.written.append(dest)
+        if self.dry_run:
+            print(f"  [dry-run] {'改写' if dest.exists() else '新建'} {dest}  "
+                  f"({src.stat().st_size} 字节)")
+            return None
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        for _ in range(2):                    # 源被追加时重试一次,仍变才抛
+            fd, tmp_name = tempfile.mkstemp(dir=dest.parent, prefix=dest.name + ".",
+                                            suffix=".hub-tmp")
+            tmp = Path(tmp_name)
+            try:
+                before = src.stat()
+                with open(src, "rb") as fsrc, os.fdopen(fd, "wb") as fdest:
+                    digest = copy_and_digest(fsrc, fdest)
+                    fdest.flush()
+                    os.fsync(fdest.fileno())
+                after = src.stat()
+                if (after.st_size, after.st_mtime_ns) == (before.st_size,
+                                                          before.st_mtime_ns):
+                    os.replace(tmp, dest)     # 原子;失败则原文件不动
+                    return digest
+            except BaseException:             # 编码/fsync/replace 任何失败都清 temp
+                tmp.unlink(missing_ok=True)
+                raise
+            tmp.unlink(missing_ok=True)       # 源变了,这轮临时作废,重开一轮
+        raise SourceChangedWhileCopying(f"复制过程中源被改写:{src}")
+
+    def rename(self, src: Path, dest: Path) -> None:
+        """把证据文件改名/搬家(dest 已存在时抛,绝不覆盖)。
+
+        preserved 把旧 current 挪进 revisions/ 时用。dest 已存在说明这个 revision 名
+        已经被占——要么上次 crash 残留,要么 sha 前缀撞名;无论哪种,覆盖它都是把已经
+        采集到的证据弄丢,宁可炸。dry-run 闸照旧:只记账、不动盘。
+        """
+        src, dest = Path(src), Path(dest)
+        if dest.exists():
+            raise FileExistsError(f"rename 拒绝覆盖已存在的目标:{dest}")
+        self.written.append(dest)
+        if self.dry_run:
+            print(f"  [dry-run] 改名 {src} → {dest}")
+            return
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(src, dest)
+
+    def write_bytes(self, path: Path, data: bytes) -> Digest | None:
+        """字节级写;与 write_text 同形,但**不做任何换行/编码处理**(dry-run 返回 None)。
+
+        给 GENERATED artifact(从 SQLite 导出的快照)落盘用:内容已经是我们生成的字节,
+        再经 write_text 的换行归一/utf-8 编码就是画蛇添足——证据层的字节要原样进仓,
+        幂等判据(两次导出字节相同)才成立。返回摘要,台账直接用它,不事后重读。
+        """
+        path = Path(path)
+        self.written.append(path)
+        if self.dry_run:
+            print(f"  [dry-run] 字节写 {'改写' if path.exists() else '新建'} {path}  "
+                  f"({len(data)} 字节)")
+            return None
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        return digest_bytes(data)
 
     def write_text(self, path: Path, text: str) -> None:
         path = Path(path)
