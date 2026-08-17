@@ -5,16 +5,20 @@
 
 ## 一句话现状
 
-ROADMAP spec 写完了，A~F 六条轨道齐备，插件 bump 到 **0.4.2**，两个仓都**已本地提交**。
-**但收尾的两步都卡住了，且都不是代码问题**：GitHub 推不上去；`hub sync` 被一道**未提交的新闸**拦下。
+ROADMAP spec 写完了，A~F 六条轨道齐备，插件 bump 到 **0.4.2**。
+本轮一度卡在两处（GitHub 推不上去、`hub sync` 被闸拦死），**两处都已解决并推送**，
+`hub sync` 恢复正常。下面「二、两处卡点」保留完整诊断，因为其中一处是真缺陷、
+修法值得留档。
 
-## 提交状态
+## 提交状态（全部已推送）
 
-| 仓 | 提交 | 推送 |
-|---|---|---|
-| `treasury-vault/shared/plugins/xinao-csb-skills`（子仓） | `cd7ddbb` + plugin.json bump 0.4.2 | ❌ 未推 |
-| `treasury-vault`（金库） | `2d7dd0d` | ❌ 未推 |
-| `treasury`（hub 本体） | 本轮**没提交**，只加了本文件 | — |
+| 仓 | 提交 |
+|---|---|
+| `treasury-vault/shared/plugins/xinao-csb-skills`（子仓） | `cd7ddbb` → `23a874d`，plugin.json bump 0.4.2 |
+| `treasury-vault`（金库） | `2d7dd0d` → `96292ce` → `3845764`（hub sync 自动提交） |
+| `treasury`（hub 本体） | `b3d6ffb`（本文件）→ `e927e15`（gitignore 范围修复） |
+
+⚠️ `cd7ddbb` / `2d7dd0d` 两条被系统时钟倒签成 2026-08-14，见「三、坑 1」。未改写历史。
 
 ---
 
@@ -76,9 +80,9 @@ GUI 技术栈**故意未定**，到 D1 真正开工时再定，届时先加载 `
 
 ---
 
-## 二、两处卡点（下一个人要处理的）
+## 二、两处卡点（**均已解决**，保留诊断供留档）
 
-### 卡点一：GitHub 推不上去
+### 卡点一：GitHub 推不上去 ✅ 已解决（等网络恢复后重推即可）
 
 ```
 fatal: unable to access 'https://github.com/patrick1099/xinao-csb-skills.git/':
@@ -90,7 +94,7 @@ Empty reply from server
 **注意** `hub/backend.py:112` 那段既有注释的结论：金库是私有仓，每次 git 操作多吃一轮
 401 挑战，在抖动的代理节点上单次失败率约 1/6，**"不是路由规则的问题，别去改 Clash"**。
 
-### 卡点二：`hub sync` 被一道未提交的新闸拦下
+### 卡点二：`hub sync` 被 chats 闸拦死 ✅ 已解决
 
 报错：
 
@@ -160,20 +164,32 @@ gitignore 里 `*` 不跨 `/`，所以 `*/*/chats/` **只匹配两级深度**：
 真往 `shared/chats/` 放个文件，`git add -A` 会收进索引，然后**每一次 `hub sync` 都被
 永久拦死**，必须人工 `git rm --cached` 才能解。
 
-#### 建议修法（**未执行**，等用户拍板）
+#### 实际修法（**已执行**，2026-08-17）
 
-```bash
-cd ~/treasury-vault
-git rm --cached "2025-bg-016/chats/.gitkeep" "2025-bg-016/claude/chats/.gitkeep" \
-                "2025-bg-016/codex/chats/.gitkeep" "shared/chats/.gitkeep"
-```
+用户批准后按两步做的，顺序不能反——**先写 `.gitignore` 再解除跟踪**，否则 `publish()`
+里的 `git add -A` 会立刻把它们加回来（`test_rm_cached_rescues_and_publish_then_succeeds`
+正是记这一点的）。
 
-删 `.gitkeep` 是安全的：`hub/scaffold_vault.py:6-8` 里 `chats` 由 scaffold 自己建，不靠 git 保留。
+1. **放宽第一层的范围**（`treasury` `e927e15`）：`_BLOCK` 的 `*/*/chats/` 改成 `chats/`
+   ——不带前导斜杠 + 带尾部斜杠 = 任意深度的同名目录，**与代码闸 `tracked_chats` 同范围**。
+   模块 docstring 里补了为什么。
+2. **补回归测试**：新增 `test_gitignore_covers_every_depth_the_code_gate_catches`，
+   同时覆盖一级（`shared/chats/`、`win/chats/`）和二级（`win/claude/chats/`）。
+   **原有 5 条用例全是二级深度，所以整个缺陷漏了过去。**
+3. **走真实代码路径落到金库**：调 `ensure_chats_ignored(vault, Writer())` 生成 `.gitignore`，
+   没有手写那三行——预演与真实执行共用同一条写路径。
+4. `git rm --cached` 四个 `.gitkeep`。文件仍在盘上（解除跟踪 ≠ 删文件，已逐个确认）。
 
-**外加把 `_BLOCK` 的模式放宽到覆盖两种深度**（`*/chats/` + `*/*/chats/`，或直接 `chats/`），
-否则第一层永远漏掉一半。
+验证：
 
-**比在闸里给 `.gitkeep` 开例外正确**——开例外只是让闸闭嘴，两层范围对不上的问题还在。
+- 新测试在**旧模式下如期失败**（`shared/chats/notes.jsonl 漏出第一层`）、新模式下通过
+  ——一个只会通过的测试不算数，专门验了这一步。
+- `pytest tests/hub` **726 passed / 3 skipped**（原 725，+1 新测试）。
+- `hub sync --refresh` 恢复正常：`memory 视图已重算 {'written': 5}`、`插件: 成功 5 / 失败 0`，
+  自动产出金库提交 `3845764`。
+
+**没有选「在闸里给 `.gitkeep` 开例外」这条路**——那只是让闸闭嘴，两层范围对不上的问题还在，
+下次换个真文件落进 `shared/chats/` 会原样复发。
 
 ---
 
@@ -222,8 +238,9 @@ ROADMAP 里属于本轮的日期已订正为 08-17；§1~§3 的 2026-08-14 是�
 
 ## 四、诚实边界
 
-- **`~/treasury` 那 11 个文件的在制品我一个字没动**，`hub/chats/` 那一整套也没动。
-  它不是我的活，闸的去留和 `_BLOCK` 模式怎么改由作者定。
+- **`hub/chats/` 那一整套在制品，本轮只动了 `gitignore.py` 的 `_BLOCK` 一行 + 它的测试**
+  （用户批准后），其余一个字没碰。期间作者把那批在制品提交并推送了（`f554076`→`5be06a4`），
+  所以我的修复是叠在正式代码上、不是改别人的未提交工作区。
 - **同目录下还有一份未跟踪的 `docs/handoff/2026-08-14-hub-chats-handoff.md`**，是写 chats
   那套的会话留下的，比本文权威得多（含 spec / plan 指针、五个源的实测形态、完整文件地图）。
   **动 hub chats 之前先读它。** 它自己的「诚实边界」一节写明：本轮无任何离机备份，
