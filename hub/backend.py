@@ -37,6 +37,22 @@ class GitlinkTracked(RuntimeError):
             + "".join(f"  - {p}\n" for p in self.paths)
             + "带 .git 的目录不能直接 add;跑 `hub induct --vault <金库> <路径>` 正规纳入后重试。")
 
+class ChatsTracked(RuntimeError):
+    """索引里出现原始对话库路径(明文,绝不允许进 git)。
+
+    对话正文必然含明文密钥和公司源码;git 的每个历史版本永久留存,事后删文件
+    不等于删历史。只靠 .gitignore 不够——它哪天被改坏、或某个文件早被
+    git add -f 强行加进索引,失败方向就是 800 MB 明文静默推上 GitHub,不可撤销。
+    闸设在这里(提交之前):发现任何匹配 */chats/* 的已跟踪路径就停,一个字节都不
+    提交。
+    """
+    def __init__(self, paths):
+        self.paths = list(paths)
+        super().__init__(
+            "金库索引里出现原始对话库(明文密钥/公司源码,进 git 不可撤销):\n"
+            + "".join(f"  - {p}\n" for p in self.paths)
+            + "对话本轮只落本机、不进 git;跑 `git rm --cached -r <路径>` 解除跟踪后重试。")
+
 def tracked_gitlinks(repo) -> list[str]:
     """索引里所有 gitlink 条目的路径(金库的硬不变量是:一个都不该有)。"""
     r = subprocess.run(["git", "ls-files", "-s"], cwd=str(repo), capture_output=True,
@@ -45,6 +61,26 @@ def tracked_gitlinks(repo) -> list[str]:
         return []
     return [l.split("\t", 1)[1] for l in r.stdout.splitlines()
             if l.startswith("160000") and "\t" in l]
+
+def tracked_chats(repo) -> list[str]:
+    """索引里所有原始对话库路径(明文密钥/公司源码,一个都不许进 git)。
+
+    按**路径组件**判,不按子串:`"/chats/" in l` 漏掉顶层的 `chats/foo`(git ls-files
+    给的路径没有前导斜杠),而顶层正是有人手工放东西时最可能落的地方。组件匹配同时
+    天然不误伤 `mychats/`、`chats.md` 这类名字。
+
+    `ls-files` 失败时**抛**,不返回空列表。这是闸,不是查询:拿不到索引清单就等于
+    "证明不了里面没有对话",而返回 `[]` 会被调用方读成"证明了没有"——闸的失败方向
+    必须是停下,不是放行。(旁边的 `tracked_gitlinks` 仍是返回 `[]` 的旧写法,那条
+    不在本次范围内,没顺手改。)
+    """
+    r = subprocess.run(["git", "ls-files"], cwd=str(repo), capture_output=True,
+                       text=True, encoding="utf-8", errors="replace")
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"git ls-files 在 {repo} 上失败(退出码 {r.returncode}),无法确认索引里有没有"
+            f"原始对话库,拒绝继续:\n{(r.stderr or '').strip()}")
+    return [l for l in r.stdout.splitlines() if "chats" in l.split("/")[:-1]]
 
 class Backend(ABC):
     @abstractmethod
@@ -112,6 +148,9 @@ class GitBackend(Backend):
         links = tracked_gitlinks(self.repo)
         if links:
             raise GitlinkTracked(links)
+        chats = tracked_chats(self.repo)
+        if chats:
+            raise ChatsTracked(chats)
         if self._run("status", "--porcelain").stdout.strip():
             self._run("commit", "-m", message)
         if self._has_remote():

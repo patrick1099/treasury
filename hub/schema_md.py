@@ -448,12 +448,23 @@ xu-local = "directory:C:\\\\Users\\\\x\\\\.claude\\\\plugins-dev"
 **3. `sensitive: true` 的记忆不入库。** 提取器跳过它,并在报告里列出**名字**(只列名字,
 不列内容)。等阶段 B(加密层)做完之后改成加密入库。
 
-## 12. 阶段 B 预留
+## 12. chats 现状与 hooks 预留
 
-`chats/` 与 `hooks/` 目前是空目录。
+- **chats**:**原始对话库,已实现**(设计见仓里
+  `docs/specs/2026-08-14-hub-chats-raw-store.md` v2)。五个源(claude / codex /
+  opencode / copilot-cli / copilot-vscode)的历史对话,字节级原样、append-only 收进
+  `<设备>/<工具>/chats/`,由**独立命令 `hub chats collect` 维护,不走 `collect`**
+  (镜像语义会把"源里没了的"删掉,而证据库的全部意义正是留着它)。
+  台账是各 chats 目录下的 `manifest.toml`;被取代的旧证据进 `revisions/`,永不覆盖。
 
-- **chats**:对话归档。要等加密层——对话正文必定含密钥/公司代码,明文进 NAS 不可接受。
-  设计意图:**加密入库,金库里只暴露名字**;要用时本地下载、本地解锁。
+  **本轮它不进 git,而且没有任何离机备份。** 金库根 `.gitignore` 挡着 `*/*/chats/`,
+  `hub sync` 还有一道 `ChatsTracked` 代码闸(只靠 gitignore 不够:改坏了或早先被
+  `git add -f` 过,失败方向就是几百 MB 明文对话静默推上远端,不可撤销)。
+  所以现在**别把它当备份**——删仓库、重新 clone、`git clean -fdx`、磁盘坏都会让它一起没。
+  解禁条件是静态加密 + 回溯脱敏;届时同步实现另议(加密会让增量文件失去 git delta,
+  一个逐日变化的几百 MB 目录会撑爆 git 历史),**不是"删掉 gitignore 那行"就完事**。
+
+  检索用的索引在 `~/.hub/chats-index.db`,是**派生物、可随时重建、不进金库**。
 - **hooks**:见 §8。现状是**没有备份**:用户级 hook 的值是嵌套结构,TOML 写出器写不出,
   `[hooks]` 那张表被跳过(带警告)。要真正备份 hook,得先给写出器补嵌套表,或者
   想清楚 hook 在金库里该长什么样(照抄 JSON?单独一个 `hooks/` 目录?)——**都还没做**。

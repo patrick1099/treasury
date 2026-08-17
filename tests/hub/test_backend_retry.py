@@ -43,7 +43,12 @@ def fast(monkeypatch):
 
 def _install(monkeypatch, fake):
     monkeypatch.setattr(GitBackend, "_run", fake)
-    monkeypatch.setattr(backend, "tracked_gitlinks", lambda repo: [])   # 本文件不测这个闸
+    # 本文件只测重试,publish() 里那两道闸各有自己的测试文件。它们**不走 _run**
+    # (各自直接 subprocess.run),所以假 git 拦不住:不打桩的话 GitBackend(Path("x"))
+    # 那个不存在的 cwd 会让真 subprocess 抛 NotADirectoryError。
+    # 往 publish() 里加新闸的人:这里也要跟着加一行,否则本文件全红。
+    monkeypatch.setattr(backend, "tracked_gitlinks", lambda repo: [])
+    monkeypatch.setattr(backend, "tracked_chats", lambda repo: [])
 
 
 def _net_flags(args) -> bool:

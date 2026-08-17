@@ -86,5 +86,8 @@ def run_all(vault_root: Path, dev: DeviceProfile, w: Writer) -> CollectReport:
             w.copy_file(p, home / "codex" / p.name)     # copy_file 自己也过一遍闸
 
     if not w.dry_run and home.is_dir():
-        rep.hits = scan_tree(home)      # 软提醒：扫刚落进金库的东西
+        # 软提醒：扫刚落进金库的东西。**chats/ 整棵跳过**——那是原始对话库
+        # (GB 级、逐日增长、由 `hub chats collect` 独立维护)。不跳过的话日常
+        # collect 每次都要 read_bytes 几百 MB 对话正文,而命中基本全是误报。
+        rep.hits = scan_tree(home, skip_dirs=sorted(home.glob("*/chats")))
     return rep
