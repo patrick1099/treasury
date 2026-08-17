@@ -36,6 +36,11 @@ class ToolSources:
     plugin_repos: str | None = None     # 自己写的插件仓所在目录（Claude 的 plugins-dev）
     settings: str | None = None         # claude: settings.json ; codex: config.toml
     agents: str | None = None           # claude: CLAUDE.md ; codex: AGENTS.md
+    # 该工具的**数据根目录**,原始对话库的输入(hub chats collect 用,collect 不碰它)。
+    # 各源要的是哪一级见 hub/chats/sources/ 各模块:claude=~/.claude、codex=~/.codex、
+    # opencode=~/.local/share/opencode、copilot-cli=~/.copilot、
+    # copilot-vscode=%APPDATA%/Code/User。
+    chats: str | None = None
 
 @dataclass
 class DeviceProfile:

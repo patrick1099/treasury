@@ -64,6 +64,7 @@ def _tool_sources(raw: dict) -> ToolSources:
         plugin_repos=raw.get("plugin_repos"),
         settings=raw.get("settings"),
         agents=raw.get("agents"),
+        chats=raw.get("chats"),
     )
 
 def load_device(root: Path, host: str) -> DeviceProfile:
