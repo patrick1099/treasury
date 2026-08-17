@@ -4,6 +4,7 @@ import subprocess
 import tarfile
 from pathlib import Path
 import pytest
+from hub.digest import Digest, SourceChangedWhileCopying, digest_bytes, digest_file
 from hub.guard import SecretPathError
 from hub.writer import Writer
 
@@ -230,6 +231,150 @@ def test_dry_run_copy_file_writes_nothing(tmp_path):
     assert dest.read_bytes() == before         # 一个字节都没动
     assert w.written == [dest]                 # 但报告说它"会"写
 
+# ---- copy_binary:原始对话证据的字节级拷贝 ---------------------------------
+#
+# 与 copy_file 的分工:copy_file 拷"我们要维护的文本"(会沿用目标换行风格);
+# copy_binary 拷"证据"(一个字节都不许动)。下面第一个测试就是这条分界线本身。
+
+def test_copy_binary_keeps_bytes_exactly_even_with_crlf_dest(tmp_path):
+    """目标已存在且是 CRLF 时,copy_binary 也必须原样落 LF —— 这正是 copy_file
+    做不到的那件事(它会把 LF 重写成 CRLF,sha256 随之改变,幂等判据失效)。"""
+    src = tmp_path / "s" / "a.jsonl"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b'{"a":1}\n{"b":2}\n')
+    dest = tmp_path / "v" / "a.jsonl"
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(b'{"old":1}\r\n')
+
+    w = Writer()
+    d = w.copy_binary(src, dest)
+
+    assert dest.read_bytes() == b'{"a":1}\n{"b":2}\n'
+    assert d == digest_file(dest)
+    assert w.written == [dest]
+
+def test_copy_binary_survives_undecodable_bytes(tmp_path):
+    """证据库的承诺是"原样保存",不是"保存我们能解码的那部分"。"""
+    src = tmp_path / "s" / "a.jsonl"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"\xff\xfe not utf-8 \x80\n")
+    dest = tmp_path / "v" / "a.jsonl"
+    d = Writer().copy_binary(src, dest)
+    assert dest.read_bytes() == b"\xff\xfe not utf-8 \x80\n"
+    assert d == digest_file(dest)
+
+def test_copy_binary_refuses_denied_source_and_writes_nothing(tmp_path):
+    src = tmp_path / "secrets" / "transcript.jsonl"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b'{"token":"super-secret"}\n')
+    dest = tmp_path / "vault" / "transcript.jsonl"
+
+    w = Writer()
+    with pytest.raises(SecretPathError):
+        w.copy_binary(src, dest)
+
+    assert not dest.exists()
+    assert w.written == []                     # 连"打算写"都没记上
+
+def test_copy_binary_refuses_denied_source_even_in_dry_run(tmp_path):
+    """硬闸拦的是**读**,dry-run 下同样是闸。"""
+    src = tmp_path / "secrets" / "transcript.jsonl"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"x")
+    with pytest.raises(SecretPathError):
+        Writer(dry_run=True).copy_binary(src, tmp_path / "v" / "t.jsonl")
+
+def test_dry_run_copy_binary_writes_nothing(tmp_path):
+    src = tmp_path / "s" / "a.jsonl"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"new\n")
+    dest = tmp_path / "v" / "a.jsonl"
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(b"old\n")
+
+    w = Writer(dry_run=True)
+    assert w.copy_binary(src, dest) is None    # dry-run:摘要也空
+
+    assert dest.read_bytes() == b"old\n"       # 一个字节都没动
+    assert w.written == [dest]                 # 但报告说它"会"写
+
+def test_copy_binary_returns_digest_matching_dest(tmp_path):
+    """返回的 Digest 就是 dest 落盘那份的摘要 —— 台账直接用它,不事后重读 dest。"""
+    src = tmp_path / "s" / "a.jsonl"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b'{"a":1}\n{"b":2}\n')
+    dest = tmp_path / "v" / "a.jsonl"
+    d = Writer().copy_binary(src, dest)
+    assert d == digest_file(dest)
+    assert d.bytes == len(b'{"a":1}\n{"b":2}\n')
+
+
+def test_copy_binary_source_changed_raises_and_preserves_dest(tmp_path, monkeypatch):
+    """复制过程中源被追加 → 抛 SourceChangedWhileCopying,且 dest 保持旧内容不变。
+
+    用 monkeypatch 包装 copy_and_digest:每次拷贝完给源追加一行,让"拷贝前后 stat"
+    永远对不上。重试一次仍变才抛 —— dest 从头到尾没被碰过。
+    """
+    from hub import writer as writer_mod
+
+    src = tmp_path / "s" / "a.jsonl"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b'{"old":1}\n')
+    dest = tmp_path / "v" / "a.jsonl"
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(b"old-partial\n")
+
+    real = writer_mod.copy_and_digest
+
+    def changing(fsrc, fdst, chunk=1 << 20):
+        d = real(fsrc, fdst, chunk)
+        with open(src, "ab") as f:
+            f.write(b"appended\n")
+        return d
+
+    monkeypatch.setattr(writer_mod, "copy_and_digest", changing)
+
+    w = Writer()
+    with pytest.raises(SourceChangedWhileCopying):
+        w.copy_binary(src, dest)
+    assert dest.read_bytes() == b"old-partial\n"
+
+
+def test_copy_binary_mid_copy_exception_cleans_temp(tmp_path, monkeypatch):
+    """copy_and_digest 中途抛异常 → 临时文件被清掉、dest 旧内容完好。"""
+    from hub import writer as writer_mod
+
+    src = tmp_path / "s" / "a.jsonl"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"new\n")
+    dest = tmp_path / "v" / "a.jsonl"
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(b"old\n")
+
+    def boom(fsrc, fdst, chunk=1 << 20):
+        raise OSError("disk blew up")
+
+    monkeypatch.setattr(writer_mod, "copy_and_digest", boom)
+
+    w = Writer()
+    with pytest.raises(OSError):
+        w.copy_binary(src, dest)
+    assert dest.read_bytes() == b"old\n"
+    assert list(dest.parent.glob("*.hub-tmp")) == []
+
+
+def test_copy_binary_dry_run_returns_none(tmp_path):
+    src = tmp_path / "s" / "a.jsonl"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"new\n")
+    dest = tmp_path / "v" / "a.jsonl"
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(b"old\n")
+    w = Writer(dry_run=True)
+    assert w.copy_binary(src, dest) is None
+    assert dest.read_bytes() == b"old\n"
+
+
 def test_extract_tar_writes_real_files(tmp_path):
     """真实运行:extract_tar() 把 tar 里的内容真的解到 dest,并记进 written。"""
     dest = tmp_path / "d"
@@ -329,3 +474,61 @@ def test_writer_remove_dir_link_absent_is_noop(tmp_path):
     w = Writer()
     w.remove_dir_link(tmp_path / "nothing")
     assert w.removed == []
+
+
+# ---- rename / write_bytes:chats collect 的两个新原语(T3) ------------------
+
+def test_rename_moves_file(tmp_path):
+    src = tmp_path / "s" / "a.jsonl"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"old\n")
+    dest = tmp_path / "v" / "a.jsonl"
+    w = Writer()
+    w.rename(src, dest)
+    assert not src.exists()
+    assert dest.read_bytes() == b"old\n"
+    assert w.written == [dest]
+
+def test_rename_refuses_existing_dest(tmp_path):
+    """dest 已存在时抛 FileExistsError,绝不覆盖 —— preserved 的证据保护。"""
+    src = tmp_path / "s" / "a.jsonl"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"new\n")
+    dest = tmp_path / "v" / "a.jsonl"
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(b"precious-old-evidence\n")
+
+    w = Writer()
+    with pytest.raises(FileExistsError):
+        w.rename(src, dest)
+    assert dest.read_bytes() == b"precious-old-evidence\n"   # 一个字都没动
+    assert src.read_bytes() == b"new\n"                      # 源也没动
+    assert w.written == []
+
+def test_rename_dry_run_moves_nothing(tmp_path):
+    src = tmp_path / "s" / "a.jsonl"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"new\n")
+    dest = tmp_path / "v" / "a.jsonl"
+    w = Writer(dry_run=True)
+    w.rename(src, dest)
+    assert src.read_bytes() == b"new\n"                      # 源原地
+    assert not dest.exists()                                 # 目标没建
+    assert w.written == [dest]                               # 但报告说它"会"搬
+
+def test_write_bytes_keeps_bytes_exact(tmp_path):
+    """write_bytes 不做任何换行/编码处理 —— 证据层字节原样进仓。"""
+    p = tmp_path / "v" / "g.jsonl"
+    data = b'{"v":1}\n\xff\xfe not utf-8 \r\n'               # CRLF + 非法编码,都不许动
+    d = Writer().write_bytes(p, data)
+    assert p.read_bytes() == data
+    assert d == digest_bytes(data)
+
+def test_write_bytes_dry_run_returns_none_writes_nothing(tmp_path):
+    p = tmp_path / "v" / "g.jsonl"
+    p.parent.mkdir(parents=True)
+    p.write_bytes(b"old\n")
+    w = Writer(dry_run=True)
+    assert w.write_bytes(p, b"new\n") is None
+    assert p.read_bytes() == b"old\n"
+    assert w.written == [p]
