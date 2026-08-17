@@ -42,3 +42,24 @@ def test_scan_tree_skips_binaries(tmp_path):
     (tmp_path / "b.bin").write_bytes(b"\x00\x01ghp_abcdefghijklmnopqrstuvwxyz0123")
     hits = scan_tree(tmp_path)
     assert [h.path.name for h in hits] == ["a.md"]
+
+
+def test_scan_tree_skips_requested_dirs_but_keeps_siblings(tmp_path):
+    """chats/ 整棵跳过；同级的东西照常扫——只断言"跳过"不够,scan_tree 什么都
+    没扫也能让那条断言通过。"""
+    key = "ghp_abcdefghijklmnopqrstuvwxyz0123\n"
+    chats = tmp_path / "claude" / "chats" / "sessions"
+    chats.mkdir(parents=True)
+    (chats / "s.jsonl").write_text(key, encoding="utf-8")
+    (tmp_path / "claude" / "CLAUDE.md").write_text(key, encoding="utf-8")
+
+    hits = scan_tree(tmp_path, skip_dirs=[tmp_path / "claude" / "chats"])
+    assert [h.path.name for h in hits] == ["CLAUDE.md"]
+
+
+def test_scan_tree_default_still_scans_everything(tmp_path):
+    """不传 skip_dirs 时行为一个字都没变。"""
+    d = tmp_path / "sub"
+    d.mkdir()
+    (d / "a.md").write_text("ghp_abcdefghijklmnopqrstuvwxyz0123\n", encoding="utf-8")
+    assert [h.path.name for h in scan_tree(tmp_path)] == ["a.md"]

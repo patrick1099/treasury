@@ -43,10 +43,23 @@ def scan_text(text: str, path: Path) -> list[Hit]:
     return hits
 
 
-def scan_tree(root: Path) -> list[Hit]:
+def _under_any(p: Path, roots: list[Path]) -> bool:
+    return any(r == p or r in p.parents for r in roots)
+
+
+def scan_tree(root: Path, skip_dirs=()) -> list[Hit]:
+    """扫一棵树。`skip_dirs` 里的目录整棵跳过。
+
+    跳过口子是给**原始对话库**开的:chats/ 是 GB 级、逐日增长的对话正文,
+    而本模块逐文件 read_bytes。不跳过的话,每次 collect 都要把整个原始库读一遍
+    ——扫出来的还基本全是误报(见文件头)。
+    """
+    skips = [Path(d) for d in skip_dirs]
     hits = []
     for p in sorted(Path(root).rglob("*")):
         if not p.is_file():
+            continue
+        if _under_any(p, skips):
             continue
         try:
             data = p.read_bytes()
