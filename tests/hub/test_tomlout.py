@@ -1,6 +1,6 @@
 import tomllib
 import pytest
-from hub.tomlout import dump_toml
+from hub.tomlout import dump_toml, quote_key
 
 def test_roundtrips_through_tomllib():
     out = dump_toml([
@@ -40,3 +40,13 @@ def test_unsupported_type_raises_naming_the_type():
     str()/repr() 糊成语法正确、语义错误的 TOML。错误要点名是哪个类型。"""
     with pytest.raises(ValueError, match="dict"):
         dump_toml([("hooks", {"PreToolUse": {"matcher": "*", "hooks": []}})])
+
+def test_quote_key_reuses_private_logic():
+    """quote_key 是 _key 的公开薄封装:裸键原样返回,含 / . 空格 中文的键
+    加引号并转义。manifest 靠它做 artifact 表名,所以走真实解析器验证
+    `artifact.<key>` 能原样读回,而不只是检查发出的文本。"""
+    assert quote_key("plain") == "plain"
+    quirky = 'sessions/工程 d.会话/a"b\\c.jsonl'
+    out = dump_toml([("artifact." + quote_key(quirky), {"k": 1})])
+    back = tomllib.loads(out)
+    assert back["artifact"][quirky] == {"k": 1}

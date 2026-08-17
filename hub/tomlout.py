@@ -14,6 +14,15 @@ def _key(k: str) -> str:
         return k
     return '"' + k.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
+def quote_key(k: str) -> str:
+    """公开的键引号封装。
+
+    manifest 这类外部模块要复用它,自己复制一份引号逻辑两个地方一起改很容易
+    各自漂移——这里只转调私有 _key,引号规则永远只有一处真源。
+    """
+    return _key(k)
+
+
 def _escape_str(s: str) -> str:
     """TOML basic string 里必须转义的字符。漏了 \\n/\\r/\\t 中任意一个,值里
     一旦真的带上对应字符,原样吐出的换行/回车/制表符就会让 tomllib.loads()
