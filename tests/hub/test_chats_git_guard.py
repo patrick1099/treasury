@@ -109,13 +109,43 @@ def test_gitignore_idempotent_writes_once(tmp_path):
     assert ensure_chats_ignored(vault, w1) is True
     assert gitignore in w1.written
     first = gitignore.read_text(encoding="utf-8")
-    assert "*/*/chats/" in first
+    assert "chats/\n" in first
     assert "原始对话库" in first
 
     w2 = Writer()
     assert ensure_chats_ignored(vault, w2) is False
     assert w2.written == [], "幂等:第二次一个字节都不写"
     assert gitignore.read_text(encoding="utf-8") == first
+
+
+def test_gitignore_covers_every_depth_the_code_gate_catches(tmp_path):
+    """两层保险的作用范围必须一致,否则第一层漏掉的会变成第二层的死锁。
+
+    真机回归(2026-08-17):`*/*/chats/` 里的 `*` 不跨 `/`,只匹配二级深度,而
+    scaffold_vault 在一级(`shared/chats/`)和二级(`<host>/<tool>/chats/`)上都建
+    chats 目录。一级那几个漏出第一层后照常被 git add -A 收进索引,再被代码闸
+    拦住——不泄漏,但从此每次 hub sync 都过不去,只能人工 git rm --cached 才解开。
+    """
+    vault = tmp_path / "vault"
+    _init_repo(vault)
+    rels = [
+        "shared/chats/notes.jsonl",          # 一级:scaffold 的 _SHARED_DIRS
+        "win/chats/notes.jsonl",             # 一级:宿主机根下
+        "win/claude/chats/s1.jsonl",         # 二级:<host>/<tool>/chats
+    ]
+    for rel in rels:
+        f = vault / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("secret cleartext\n", encoding="utf-8")
+
+    ensure_chats_ignored(vault, Writer())
+    _git(vault, "add", "-A")
+
+    tracked = _tracked(vault)
+    for rel in rels:
+        assert rel not in tracked, f"{rel} 漏出第一层,会被代码闸拦成死锁"
+    # 而且第一层生效后 publish 照常走得通(证明没把仓锁死)
+    GitBackend(vault).publish("chore(hub): sync")
 
 
 def test_gitignore_preserves_existing_content(tmp_path):
@@ -129,8 +159,8 @@ def test_gitignore_preserves_existing_content(tmp_path):
     ensure_chats_ignored(vault, w)
     text = gitignore.read_text(encoding="utf-8")
     assert "build/out/" in text, "既有内容必须保留"
-    assert "*/*/chats/" in text
-    assert text.index("build/out/") < text.index("*/*/chats/")
+    assert "chats/\n" in text
+    assert text.index("build/out/") < text.index("chats/\n")
 
 
 def test_gitignore_dry_run_writes_nothing(tmp_path):
