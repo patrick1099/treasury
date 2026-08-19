@@ -1,4 +1,5 @@
 import argparse
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -40,6 +41,166 @@ from hub.plugin_migrate import (prepare_migration, execute_migration, prepare_cu
                                 prepare_retire, execute_retire, MigrationInputError)
 from hub.induction import (recover_pending, InductionError,
                            prepare_induction, execute_induction, drop_gitlink)
+
+def _envelope(ok: bool, data=None, error=None, meta=None) -> dict:
+    return {"ok": ok, "data": data, "error": error, "meta": meta or {}}
+
+_MACHINE_OUT = None
+_MACHINE_ERR = None
+_MAIN_ARGV: list[str] | None = None
+
+def _machine_write(channel: str, text: str) -> None:
+    sink = _MACHINE_OUT if channel == "out" else _MACHINE_ERR
+    if sink is not None:
+        sink.write(text.encode("utf-8"))
+        return
+    stream = sys.stdout if channel == "out" else sys.stderr
+    buf = getattr(stream, "buffer", None)
+    if buf is not None:
+        buf.write(text.encode("utf-8"))
+    else:
+        stream.write(text)
+
+def _emit_result(data) -> None:
+    _machine_write("out", json.dumps(_envelope(True, data=data), ensure_ascii=False, indent=2) + "\n")
+
+def _emit_error(code: str, message: str, details=None, retryable: bool = False,
+                suggestion=None) -> None:
+    error = {"code": code, "message": message, "retryable": retryable}
+    if details is not None:
+        error["details"] = details
+    if suggestion is not None:
+        error["suggestion"] = suggestion
+    _machine_write("err", json.dumps(_envelope(False, error=error), ensure_ascii=False, indent=2) + "\n")
+
+def _json_requested(argv: list[str] | None) -> bool:
+    if argv is None:
+        argv = sys.argv[1:]
+    stopped = False
+    for i, tok in enumerate(argv):
+        if stopped:
+            break
+        if tok == "--":
+            stopped = True
+            continue
+        if tok == "--json":
+            return True
+        if tok == "--format":
+            if i + 1 < len(argv) and argv[i + 1] == "json":
+                return True
+        elif tok.startswith("--format=") and tok.split("=", 1)[1] == "json":
+            return True
+    return False
+
+class _JsonFriendlyParser(argparse.ArgumentParser):
+    def error(self, message):
+        if _json_requested(_MAIN_ARGV):
+            _emit_error("E_VALIDATION", message)
+            raise SystemExit(2)
+        super().error(message)
+
+def _add_output_flags(parser) -> None:
+    parser.add_argument("--json", action="store_true", default=False,
+                        help="输出 JSON 信封（与 --format json 等价）")
+    parser.add_argument("--format", choices=("json",), default="json",
+                        help="输出格式：仅支持 json（与 --json 等价）")
+
+AI_HELP = """---
+name: hub
+description: >
+  hub CLI——跨工具共享记忆金库的读写入口。memory-read 等命令按 CLI-AI 规范输出
+  统一信封；其余命令保持人类可读文本。Use when user asks to read shared memory,
+  sync the vault, register skills, promote memories, or manage the hub.
+ai_help_version: 0.1.0
+---
+
+# hub AI Help Guide
+
+## Quick Reference
+
+- **读一条记忆:** `hub memory-read --vault <金库> --host <主机> --tool claude --name <名>`
+- **读成 JSON:** 追加 `--json`（等价 `--format json` / `--format=json`）
+- **看全部命令:** `hub --help`
+
+## When to Use
+
+Use this tool when the user asks to:
+- 读金库里的共享记忆正文（memory-read）
+- 同步金库到远端 / 生成索引（sync）
+- 把 skill / 记忆提升进共享区（promote / promote-memory）
+- 注册各工具的 skill 链接（register）
+- 管理插件迁移（migrate-plugins / cutover-plugins / retire-plugin-sources）
+- 密钥库操作（secrets，纯人用，不走 --json）
+
+Do NOT use for:
+- 写入或编辑记忆正文（hub 是金库的搬运工，不是编辑器）
+- 替换各工具自身的 skill 流程
+
+## Command Reference
+
+- `memory-read --vault P --host H --tool T --name N`：读一条共享记忆的正文。
+  默认人类模式 stdout 只有正文；`--json` 时 stdout 是 `{ok,data,error,meta}` 信封。
+- `sync`：git 拉取 + lint + 写 MEMORY.md 索引 + 推送。
+- `collect`：把本机配置的源镜像进金库备份区。
+- `register` / `refresh` / `promote` / `promote-memory`：链接与提升。
+- `secrets`：密钥库（exec/run/render/unlock），只给人用，无 --json。
+
+## Input / Output
+
+- **机器通道（--json / --format json / --ai-help）**：UTF-8 字节，走统一信封
+  `{ok, data, error, meta}`；失败信封走 stderr，成功信封走 stdout。
+- **人类通道（默认）**：保持各命令既有的纯文本输出（过渡期不改）。
+- memory-read --json 的成功 data 含 `name` / `tool` / `host` / `vault` / `body`
+  （body 是正文原样，不 trim、不改换行）。
+
+## Side Effects & Safety
+
+- `sync` / `collect` 会写金库并可能触发 git 提交/推送；`--dry-run` 只报告不落盘。
+- 其余命令只读。共享记忆是唯一备份，删除类操作要确认。
+- 不联网（除 sync 的 git 远端）。
+
+## Exit Codes
+
+| 退出码 | 含义 |
+|---|---|
+| 0 | 成功 |
+| 1 | 运行失败（E_NOT_FOUND / E_INTERNAL / E_INTERRUPTED 等） |
+| 2 | 参数/用法错误（E_VALIDATION，含 argparse 解析失败） |
+
+| error.code | 含义 |
+|---|---|
+| `E_VALIDATION` | 参数/用法错误 |
+| `E_NOT_FOUND` | 记忆不存在或越 scope |
+| `E_INTERRUPTED` | 用户中断 |
+| `E_INTERNAL` | 未预期内部错误 |
+
+## Errors & Recovery
+
+| 现象 | 处理 |
+|---|---|
+| 记忆读不到（E_NOT_FOUND） | 确认名字拼写 / scope 含 global 或本机 class/project / tool 归属；先跑 `hub register` 刷新视图 |
+| 没配 vault 读不了 | 跑 `hub register` 绑定金库，或显式传 `--vault` |
+| git 冲突（sync 返回 2） | 手工解决冲突后重试 |
+| 参数拼错（E_VALIDATION） | `hub --help` 看用法 |
+
+❌ 错：`hub memory-read --tool claude --name 不存在`
+✅ 对：`hub memory-read --vault <金库> --host <主机> --tool claude --name <存在的名>`
+"""
+
+def _handle_ai_help(argv: list[str] | None) -> bool:
+    if argv is None:
+        argv = sys.argv[1:]
+    stopped = False
+    for token in argv:
+        if stopped:
+            break
+        if token == "--":
+            stopped = True
+            continue
+        if token == "--ai-help":
+            _machine_write("out", AI_HELP)
+            return True
+    return False
 
 def _lint(vault, exempt: set[str]) -> list[str]:
     errs = []
@@ -439,12 +600,27 @@ def _cmd_sync(args) -> int:
 def _cmd_memory_read(args) -> int:
     vault = args.vault or read_config().get("vault")
     host = args.host or read_config().get("host") or current_host()
+    json_mode = getattr(args, "json", False)
     if not vault:
+        if json_mode:
+            _emit_error("E_NOT_FOUND", "没有 --vault 也没有 ~/.hub/config.toml，无法定位金库",
+                        suggestion="跑 `hub register` 绑定金库，或显式传 --vault <路径>")
+            return 1
         print("没有 --vault 也没有 ~/.hub/config.toml，无法定位金库"); return 1
     try:
-        print(read_memory(Path(vault), host, args.tool, args.name), end="")
+        body = read_memory(Path(vault), host, args.tool, args.name)
     except (MemoryNotInView, FileNotFoundError, ViewScopeError, SharedMemoryError) as e:
+        if json_mode:
+            _emit_error("E_NOT_FOUND", str(e), retryable=False,
+                        suggestion="确认名字拼写、scope 含 global 或本机 class/project、"
+                                   "tool 属于该工具；可先 `hub register` 刷新视图")
+            return 1
         print(e); return 1
+    if json_mode:
+        _emit_result({"name": args.name, "tool": args.tool, "host": host,
+                      "vault": str(Path(vault)), "body": body})
+        return 0
+    print(body, end="")
     return 0
 
 def _write_index(vault_root: Path, vault, w: Writer) -> None:
@@ -454,7 +630,12 @@ def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--vault", required=True)
     common.add_argument("--host", default=None)
-    p = argparse.ArgumentParser(prog="hub")
+    _add_output_flags(common)
+    p = _JsonFriendlyParser(
+        prog="hub",
+        description="hub CLI——跨工具共享记忆金库。"
+        " LLMs/agents: run 'hub --ai-help' for usage guidance.")
+    _add_output_flags(p)
     sub = p.add_subparsers(dest="cmd", required=True)
     st = sub.add_parser("status", parents=[common])
     st.add_argument("--check", action="store_true", help="健康检查，不健康返回非零")
@@ -526,6 +707,7 @@ def build_parser() -> argparse.ArgumentParser:
     rp.set_defaults(func=_cmd_retire_plugin_sources)
 
     mr = sub.add_parser("memory-read")
+    _add_output_flags(mr)
     mr.add_argument("--vault", default=None)
     mr.add_argument("--host", default=None)
     mr.add_argument("--tool", required=True, choices=["claude", "codex", "opencode"])
@@ -562,22 +744,46 @@ def build_parser() -> argparse.ArgumentParser:
 def _make_console_output_tolerant() -> None:
     """本机 py -3 -c "print(sys.stdout.encoding)" 报 gbk,而 gbk 编不出 ⚠(U+26A0)——
     secrets-scan/脏仓警告一旦真的命中,print() 就会以 UnicodeEncodeError 崩溃,
-    唯一该报警的时刻反而看着像随机 Python bug。这里只把 errors 换成 replace(
-    编不出就退化成 ?),不动 encoding——强改 encoding="utf-8" 会让 gbk 控制台上
-    其余中文输出变乱码,那是比崩溃更隐蔽的坏。捕获测试用的替身 stdout 之类不支持
+    唯一该报警的时刻反而看着像随机 Python bug。TTY(真实控制台)保持 encoding 不动、
+    只把 errors 换成 replace(编不出就退化成 ?),强改 encoding="utf-8" 会让 gbk 控制台
+    上其余中文输出变乱码;非 TTY(管道/重定向,AI/agent 消费的场景)强制 UTF-8——
+    机器通道与契约闸都要求 UTF-8 字节。捕获测试用的替身 stdout 之类不支持
     reconfigure() 的场景一律跳过,不当作错误。"""
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
-        if reconfigure is not None:
-            try:
+        if reconfigure is None:
+            continue
+        try:
+            if getattr(stream, "isatty", lambda: False)():
                 reconfigure(errors="replace")
-            except (ValueError, OSError):
-                pass
+            else:
+                reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            pass
 
 def main(argv: list[str]) -> int:
+    global _MAIN_ARGV
+    _MAIN_ARGV = argv if argv is not None else sys.argv[1:]
     _make_console_output_tolerant()
-    args = build_parser().parse_args(argv)
-    return args.func(args)
+    if _handle_ai_help(_MAIN_ARGV):
+        return 0
+    args = build_parser().parse_args(_MAIN_ARGV)
+    json_mode = _json_requested(_MAIN_ARGV)
+    setattr(args, "json", json_mode)
+    try:
+        return args.func(args)
+    except KeyboardInterrupt:
+        if json_mode:
+            _emit_error("E_INTERRUPTED", "interrupted", retryable=True)
+        else:
+            print("interrupted", file=sys.stderr)
+        return 1
+    except Exception as e:
+        if json_mode:
+            _emit_error("E_INTERNAL", f"{type(e).__name__}: {e}")
+        else:
+            print(f"internal error: {type(e).__name__}: {e}", file=sys.stderr)
+        return 1
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
