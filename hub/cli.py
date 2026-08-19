@@ -29,7 +29,9 @@ from hub.fslink import LinkError
 from hub.vaultpaths import SharedSkillsEscape
 from hub.hubconfig import read_config, write_config, check_config, ConfigConflict
 from hub.memread import read_memory, MemoryNotInView
-from hub.secrets_cli import cmd_exec, cmd_render, cmd_run, cmd_unlock
+from hub.secrets_cli import (cmd_exec, cmd_render, cmd_run, cmd_unlock,
+                             _secrets_error_code)
+from hub.secrets_store import SecretsError
 from hub.memview import ViewScopeError, SharedMemoryError
 from hub.memwire import prepare_memory_views, commit_memory_views
 from hub.textblock import BlockError
@@ -134,6 +136,8 @@ def _error_code(exc: Exception) -> str:
         return "E_VALIDATION"
     if isinstance(exc, subprocess.CalledProcessError):
         return "E_EXTERNAL_TOOL"
+    if isinstance(exc, SecretsError):
+        return _secrets_error_code(exc)
     if isinstance(exc, ValueError):
         return "E_VALIDATION"
     cause = exc.__cause__ or exc.__context__
@@ -211,7 +215,7 @@ Use this tool when the user asks to:
 - 把 skill / 记忆提升进共享区（promote / promote-memory）
 - 注册各工具的 skill 链接（register）
 - 管理插件迁移（migrate-plugins / cutover-plugins / retire-plugin-sources）
-- 密钥库操作（secrets，纯人用，不走 --json）
+- 密钥库操作（secrets：exec 给 AI 可 --json；run/render/unlock 只给人）
 
 Do NOT use for:
 - 写入或编辑记忆正文（hub 是金库的搬运工，不是编辑器）
@@ -224,7 +228,25 @@ Do NOT use for:
 - `sync`：git 拉取 + lint + 写 MEMORY.md 索引 + 推送。
 - `collect`：把本机配置的源镜像进金库备份区。
 - `register` / `refresh` / `promote` / `promote-memory`：链接与提升。
-- `secrets`：密钥库（exec/run/render/unlock），只给人用，无 --json。
+- `secrets`：密钥库。exec 给 AI（可 --json）；run/render/unlock 只给人。
+
+## Secrets（密钥库）
+
+- `secrets exec <profile> <args...>`：给 AI 的通道，只能跑预先声明好的 profile。
+  `--json` 时 stdout 是 `{ok,data,error,meta}` 信封。成功：data 含 `exit_code` 与
+  `stdout`（已遮罩；只放 stdout，不放 stderr）。失败：`E_EXTERNAL_TOOL`，details 含
+  `tool` / `exit_code` / `stderr_tail`（末 ~500 字符），退出码归一成 1（原退出码在
+  details.exit_code）。
+- `secrets run --profile P -- <cmd...>`：只给人。`--json` 时非 TTY 必拒（
+  `E_VALIDATION` rc1）；TTY 下失败是 `E_EXTERNAL_TOOL`，信封**绝不含 run 的原始输出**
+  （run 不遮罩，原始输出可能含密钥）。交互式子进程在 capture 下可能挂起——AI 不要用
+  run，用 exec。
+- `secrets render` / `secrets unlock`：human-only、无 `--json`。AI 传 `--json` 会收到
+  `E_VALIDATION` 信封（rc2）——这不是 bug，是声明"它们不是给 AI 的"。
+- **人类模式（无 --json）的 exec/run 是 legacy passthrough**：stdout/stderr 直写、
+  退出码原样透传，**不声称符合统一退出码契约**；json 模式才把退出码定界进信封。
+- secrets 退出码收敛（人类模式与 json 模式一致）：profile 不存在 → `E_NOT_FOUND` rc1；
+  `run` 的 `--` 后空 → `E_VALIDATION` rc2；human_only 拒绝/其它 → `E_VALIDATION` rc1。
 
 ## Input / Output
 
@@ -239,6 +261,10 @@ Do NOT use for:
 - `sync` / `collect` 会写金库并可能触发 git 提交/推送；`--dry-run` 只报告不落盘。
 - 其余命令只读。共享记忆是唯一备份，删除类操作要确认。
 - 不联网（除 sync 的 git 远端）。
+- **secrets 泄密边界**：密钥真值只在子进程 env 里。exec 的 json 信封只放 tool /
+  exit_code / 遮罩后的 stdout / 截断的 stderr_tail；run 的 json 信封只放 exit_code，
+  绝不放输出。stderr_tail 是诊断流不是安全边界；真实隔离靠 exec 的遮罩 + run 的
+  human_only。
 
 ## Exit Codes
 
@@ -252,6 +278,7 @@ Do NOT use for:
 |---|---|
 | `E_VALIDATION` | 参数/用法错误 |
 | `E_NOT_FOUND` | 记忆不存在或越 scope |
+| `E_EXTERNAL_TOOL` | secrets exec/run 的子进程以非零退出码结束 |
 | `E_INTERRUPTED` | 用户中断 |
 | `E_INTERNAL` | 未预期内部错误 |
 
@@ -1145,6 +1172,7 @@ def build_parser() -> argparse.ArgumentParser:
     ssub = sec.add_subparsers(dest="subcmd", required=True)
 
     se = ssub.add_parser("exec", help="给 AI 的通道：只能跑预先声明好的 profile")
+    _add_output_flags(se)
     se.add_argument("profile")
     # REMAINDER 而不是 "*"：尾参里的 --force / --out=x 必须原样透传给目标程序，
     # 不能被 hub 自己的 argparse 抢走。
@@ -1152,6 +1180,7 @@ def build_parser() -> argparse.ArgumentParser:
     se.set_defaults(func=cmd_exec)
 
     sr = ssub.add_parser("run", help="只给人：在真实终端里，用某 profile 的密钥跑任意命令")
+    _add_output_flags(sr)
     sr.add_argument("--profile", required=True)
     sr.add_argument("argv", nargs=argparse.REMAINDER)
     sr.set_defaults(func=cmd_run)
