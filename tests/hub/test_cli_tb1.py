@@ -89,6 +89,20 @@ def test_error_code_domain_errors():
     assert cli._error_code(RuntimeError("x")) == "E_INTERNAL"
 
 
+def test_error_code_tb2_domain_errors():
+    from hub.collect.errors import MissingSourceError
+    from hub.frontmatter import FrontmatterError
+    from hub.migrate import SchemaMigrationError
+    from hub.plugin_migrate import MigrationInputError
+    from hub.induction import InductionError
+    assert cli._error_code(MissingSourceError("x")) == "E_NOT_FOUND"
+    assert cli._error_code(FrontmatterError("x")) == "E_VALIDATION"
+    assert cli._error_code(SchemaMigrationError("x")) == "E_VALIDATION"
+    assert cli._error_code(MigrationInputError("x")) == "E_VALIDATION"
+    assert cli._error_code(InductionError("x")) == "E_VALIDATION"
+    assert cli._error_code(subprocess.CalledProcessError(1, ["x"])) == "E_EXTERNAL_TOOL"
+
+
 def test_error_code_cause_chain_finds_domain():
     outer = RuntimeError("外层")
     outer.__cause__ = RegisterConflict("内层冲突")

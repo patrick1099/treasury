@@ -125,6 +125,13 @@ def _error_code(exc: Exception) -> str:
         return "E_NETWORK"
     if isinstance(exc, CliUnavailable):
         return "E_EXTERNAL_TOOL"
+    if isinstance(exc, MissingSourceError):
+        return "E_NOT_FOUND"
+    if isinstance(exc, (FrontmatterError, SchemaMigrationError, MigrationInputError,
+                        InductionError)):
+        return "E_VALIDATION"
+    if isinstance(exc, subprocess.CalledProcessError):
+        return "E_EXTERNAL_TOOL"
     if isinstance(exc, ValueError):
         return "E_VALIDATION"
     cause = exc.__cause__ or exc.__context__
@@ -568,6 +575,7 @@ def _cmd_collect(args) -> int:
     vault_root = Path(args.vault)
     host = args.host or current_host()
     dev = load_device(vault_root, host)
+    json_mode = getattr(args, "json", False)
 
     try:
         # 先验后写(一):配了的源必须真的在。配置坏了**不是**"用户把记忆删光了",绝不能
@@ -575,6 +583,10 @@ def _cmd_collect(args) -> int:
         preflight(dev)
         doomed = plan_deletions(vault_root, dev)
     except MissingSourceError as e:
+        if json_mode:
+            _emit_error("E_NOT_FOUND", f"collect 停止:device.toml 里的源路径有问题\n{e}",
+                        retryable=False)
+            return 1
         print("collect 停止:device.toml 里的源路径有问题\n")
         print(e)
         return 1
@@ -591,10 +603,22 @@ def _cmd_collect(args) -> int:
         # 永远不会陈旧。错误信息里已经点名了是哪个文件。
         load_vault(vault_root)
     except FrontmatterError as e:
+        if json_mode:
+            _emit_error("E_VALIDATION",
+                        f"collect 停止:金库里有一条记忆解析不了(在写任何东西之前就停了,金库没变)\n{e}",
+                        retryable=False)
+            return 1
         print("collect 停止:金库里有一条记忆解析不了(在写任何东西之前就停了,金库没变)\n")
         print(e)
         return 1
     if doomed and not args.yes and not args.dry_run:
+        if json_mode:
+            _emit_error("E_VALIDATION",
+                        f"这次 collect 会从金库删掉 {len(doomed)} 条记忆,但没给 --yes",
+                        details={"doomed": list(doomed)},
+                        retryable=False,
+                        suggestion="确认无误后加 --yes 执行,或加 --dry-run 只预览不动盘")
+            return 1
         print(f"这次会从金库删掉 {len(doomed)} 条记忆(本机源里已经没有它们了):")
         for n in doomed:
             print("  -", n)
@@ -603,7 +627,26 @@ def _cmd_collect(args) -> int:
             return 1
 
     w = Writer(dry_run=args.dry_run)
-    rep = run_all(vault_root, dev, w)
+    with _stdout_to_stderr() if json_mode else nullcontext():
+        rep = run_all(vault_root, dev, w)
+
+    if json_mode:
+        with _stdout_to_stderr():
+            vault = load_vault(vault_root)
+            _write_index(vault_root, vault, w)
+        data = {
+            "dry_run": bool(args.dry_run),
+            "memory_written": len(rep.memory.written),
+            "memory_deleted": len(rep.memory.deleted),
+            "skipped_sensitive": len(rep.memory.skipped_sensitive),
+            "skills": {tool: list(names) for tool, names in rep.skills.items()},
+            "decl": {tool: {"repos": len(d.repos), "enabled": len(d.enabled),
+                            "dirty": len(d.dirty)}
+                     for tool, d in rep.decl.items()},
+            "hits": [{"kind": h.kind, "path": str(h.path), "line": h.line,
+                      "sample": h.sample} for h in rep.hits],
+        }
+        return 0 if _emit_result(data) else 1
 
     print(f"记忆: 写 {len(rep.memory.written)} 删 {len(rep.memory.deleted)}")
     if rep.memory.skipped_sensitive:
@@ -640,8 +683,13 @@ def _cmd_bootstrap(args) -> int:
     vault_root = Path(args.vault)
     host = args.host or current_host()
     dev = load_device(vault_root, host)
+    json_mode = getattr(args, "json", False)
     src = vault_root / "shared" / "skills"
     if not src.is_dir():
+        if json_mode:
+            _emit_error("E_NOT_FOUND", "金库的 shared/skills/ 是空的，没有加载器 skill 可装。",
+                        suggestion="先把加载器 skill 提升进金库的 shared/skills/")
+            return 1
         print("金库的 shared/skills/ 是空的，没有加载器 skill 可装。")
         return 1
     w = Writer(dry_run=args.dry_run)
@@ -652,32 +700,65 @@ def _cmd_bootstrap(args) -> int:
             continue
         for d in sorted(p for p in src.iterdir() if p.is_dir() and p.name.startswith("hub-")):
             dest = Path(home) / "skills" / d.name
-            w.copy_tree(d, dest)
+            with _stdout_to_stderr() if json_mode else nullcontext():
+                w.copy_tree(d, dest)
             installed.append(f"{tool}:{d.name}")
+    if json_mode:
+        return 0 if _emit_result({"dry_run": bool(args.dry_run),
+                                  "installed": installed}) else 1
     verb = "预计会装" if args.dry_run else "已装"
     print(f"{verb} {len(installed)} 把加载器 skill: {installed}")
     print("接下来在各工具里跑那把 skill，它会自己去金库取记忆。")
     return 0
 
 def _cmd_migrate_schema(args) -> int:
+    json_mode = getattr(args, "json", False)
     try:
-        migrate_schema(Path(args.vault), args.to, Writer(dry_run=args.dry_run))
+        with _stdout_to_stderr() if json_mode else nullcontext():
+            migrate_schema(Path(args.vault), args.to, Writer(dry_run=args.dry_run))
     except SchemaMigrationError as e:
+        if json_mode:
+            _emit_error("E_VALIDATION", str(e), retryable=False)
+            return 1
         print(e); return 1
+    if json_mode:
+        return 0 if _emit_result({"dry_run": bool(args.dry_run), "to": args.to}) else 1
     print(f"{'预计升到' if args.dry_run else '已升到'} version {args.to}")
     return 0
 
 def _cmd_migrate_plugins(args) -> int:
     w = Writer(dry_run=args.dry_run)
+    json_mode = getattr(args, "json", False)
     try:
         vault = Path(args.vault)
         if not w.dry_run:
             recover_pending(vault, w)      # C4：先恢复上次崩在".git 已移出"的事务，再做新 prepare
         plan = prepare_migration(Path(args.src), vault, Path(args.input))
-        rep = execute_migration(plan, vault, w)
+        with _stdout_to_stderr() if json_mode else nullcontext():
+            rep = execute_migration(plan, vault, w)
     except (MigrationInputError, InductionError, OSError, ValueError,
             subprocess.CalledProcessError) as e:
+        if json_mode:
+            _emit_error(_error_code(e), str(e), retryable=False)
+            return 1
         print(e); return 1
+    if json_mode:
+        data = {
+            "dry_run": bool(args.dry_run),
+            "warnings": list(plan.warnings),
+            "failed": [[aid, why] for aid, why in rep.failed],
+            "succeeded": list(rep.done),
+        }
+        if rep.failed:
+            _emit_error("E_PARTIAL_FAILURE",
+                        f"迁移完成,但有 {len(rep.failed)} 项失败",
+                        details={"failed": [[aid, why] for aid, why in rep.failed],
+                                 "succeeded": list(rep.done),
+                                 "warnings": list(plan.warnings)},
+                        retryable=True,
+                        suggestion="查看 details.failed 里的原因,修复后重试 `hub migrate-plugins`")
+            return 1
+        return 0 if _emit_result(data) else 1
     for warning in plan.warnings:
         print("  ⚠", warning)
     for aid, why in rep.failed:
@@ -686,14 +767,34 @@ def _cmd_migrate_plugins(args) -> int:
 
 def _cmd_cutover_plugins(args) -> int:
     w = Writer(dry_run=args.dry_run)
+    json_mode = getattr(args, "json", False)
     try:
         vault = Path(args.vault); dev = load_device(vault, args.host or current_host())
-        plan = prepare_cutover(vault, dev, old_market=args.old_market)
-        rep = execute_plugin_plan(plan, w)
+        with _stdout_to_stderr() if json_mode else nullcontext():
+            plan = prepare_cutover(vault, dev, old_market=args.old_market)
+            rep = execute_plugin_plan(plan, w)
     except (MigrationInputError, PluginManifestError, PluginIdentityError,
             PluginContainmentError, PluginRepoUnavailable, CliUnavailable,
             UnsupportedVaultVersion, FileNotFoundError) as e:
+        if json_mode:
+            _emit_error(_error_code(e), str(e), retryable=False)
+            return 1
         print(e); return 1
+    if json_mode:
+        data = {"dry_run": bool(args.dry_run),
+                "plugin": {"succeeded": len(rep.succeeded),
+                           "skipped": len(rep.skipped),
+                           "failed": len(rep.failed)}}
+        if rep.failed:
+            _emit_error("E_PARTIAL_FAILURE",
+                        f"cutover 完成,但有 {len(rep.failed)} 个插件动作失败",
+                        details={"failed": [[i, why] for i, why in rep.failed],
+                                 "succeeded": list(rep.succeeded),
+                                 "skipped": list(rep.skipped)},
+                        retryable=True,
+                        suggestion="查看 details.failed 里的原因,修复后重试 `hub cutover-plugins`")
+            return 1
+        return 0 if _emit_result(data) else 1
     for aid, why in rep.failed:
         print(f"  ✗ {aid}: {why}")
     return 0 if not rep.failed else 1
@@ -702,19 +803,34 @@ def _cmd_retire_plugin_sources(args) -> int:
     # 三段式 phase3：平台切换成功且验证后，才删除迁移输入声明的旧子仓。
     # 任一预检失败→零删除；只删声明的子仓，不碰外层容器。dry-run 与真跑共用 planner/executor。
     w = Writer(dry_run=args.dry_run)
+    json_mode = getattr(args, "json", False)
     try:
         vault = Path(args.vault); dev = load_device(vault, args.host or current_host())
-        plan = prepare_retire(Path(args.src), vault, Path(args.input), dev,
-                              old_market=args.old_market)
-        rep = execute_retire(plan, w)
+        with _stdout_to_stderr() if json_mode else nullcontext():
+            plan = prepare_retire(Path(args.src), vault, Path(args.input), dev,
+                                  old_market=args.old_market)
+            rep = execute_retire(plan, w)
     except (MigrationInputError, CliUnavailable, UnsupportedVaultVersion,
             FileNotFoundError, OSError) as e:
+        if json_mode:
+            _emit_error(_error_code(e), str(e), retryable=False)
+            return 1
         print(e); return 1
     if rep.blocked:
+        if json_mode:
+            _emit_error("E_VALIDATION",
+                        f"退役被拒:还有 {len(rep.blocked)} 个活动引用(零删除)",
+                        details={"blocked": list(rep.blocked)},
+                        retryable=False,
+                        suggestion="先解决 details.blocked 里的活动引用,再重试 `hub retire-plugin-sources`")
+            return 1
         print("退役被拒（零删除）——先解决以下活动引用：")
         for b in rep.blocked:
             print(f"  ✗ {b}")
         return 1
+    if json_mode:
+        return 0 if _emit_result({"dry_run": bool(args.dry_run),
+                                  "actions": [a.target for a in plan.actions]}) else 1
     if not plan.actions:
         print("没有待退役的旧源（已删或未声明）。")
         return 0
@@ -730,22 +846,44 @@ def _cmd_induct(args) -> int:
     手 `git add` 得到 gitlink 空壳,而 migrate-plugins 见到 gitlink 直接拒绝。
     """
     vault_root = Path(args.vault)
+    json_mode = getattr(args, "json", False)
     w = Writer(dry_run=args.dry_run)
-    for raw in args.path:
-        rel = str(raw).replace("\\", "/").strip("/")
-        if not (vault_root / rel).is_dir():
-            print(f"induct 停止:{rel} 不是金库里的目录"); return 1
-        try:
-            plan = prepare_induction(vault_root, rel)
-            if args.dry_run:
-                print(f"  [dry-run] 摘 gitlink(若有)+ induct {rel}")
+    done = []
+    fail = None
+    with _stdout_to_stderr() if json_mode else nullcontext():
+        for raw in args.path:
+            rel = str(raw).replace("\\", "/").strip("/")
+            if not (vault_root / rel).is_dir():
+                if not json_mode:
+                    print(f"induct 停止:{rel} 不是金库里的目录")
+                fail = (2, f"induct 停止:{rel} 不是金库里的目录")
+                break
+            try:
+                plan = prepare_induction(vault_root, rel)
+                if args.dry_run:
+                    print(f"  [dry-run] 摘 gitlink(若有)+ induct {rel}")
+                else:
+                    if drop_gitlink(vault_root, rel):
+                        print(f"  已摘掉 {rel} 的 gitlink 条目(文件留在盘上)")
+                    execute_induction(plan, vault_root, w)
+                    print(f"  已纳入 {rel}")
+                done.append(rel)
+            except InductionError as e:
+                if not json_mode:
+                    print(f"induct 停止:{e}")
+                fail = (1, f"induct 停止:{e}")
+                break
+    if fail is not None:
+        rc, msg = fail
+        if json_mode:
+            if rc == 2:
+                _emit_error("E_VALIDATION", msg,
+                            suggestion="传金库内的相对路径(如 shared/plugins/foo)")
             else:
-                if drop_gitlink(vault_root, rel):
-                    print(f"  已摘掉 {rel} 的 gitlink 条目(文件留在盘上)")
-                execute_induction(plan, vault_root, w)
-                print(f"  已纳入 {rel}")
-        except InductionError as e:
-            print(f"induct 停止:{e}"); return 1
+                _emit_error("E_VALIDATION", msg, retryable=False)
+        return rc
+    if json_mode:
+        return 0 if _emit_result({"dry_run": bool(args.dry_run), "paths": done}) else 1
     if not args.dry_run:
         print("提示:改动还在 index 里,跑 `hub sync` 提交并推送。")
     return 0

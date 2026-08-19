@@ -74,7 +74,8 @@ def test_induct_rescues_an_already_committed_gitlink(tmp_path, capsys):
 
 def test_induct_rejects_a_path_outside_the_vault(tmp_path):
     vault, _ = _vault_with_nested_plugin(tmp_path)
-    assert main(["induct", "--vault", str(vault), "../escape"]) == 1
+    # path 非金库内目录收敛到 rc2(E_VALIDATION 用法错误),人类文本不变
+    assert main(["induct", "--vault", str(vault), "../escape"]) == 2
 
 
 def test_remote_unavailable_is_not_sold_as_a_conflict(tmp_path):
