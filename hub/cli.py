@@ -2,6 +2,8 @@ import argparse
 import json
 import subprocess
 import sys
+from contextlib import contextmanager, nullcontext
+from datetime import date, datetime
 from pathlib import Path
 from hub.vault import load_vault, load_device, current_host
 from hub.migrate import migrate_schema, SchemaMigrationError
@@ -45,6 +47,22 @@ from hub.induction import (recover_pending, InductionError,
 def _envelope(ok: bool, data=None, error=None, meta=None) -> dict:
     return {"ok": ok, "data": data, "error": error, "meta": meta or {}}
 
+_MINIMAL_INTERNAL = {"ok": False, "data": None,
+                     "error": {"code": "E_INTERNAL", "message": "序列化失败", "retryable": False},
+                     "meta": {}}
+
+def _json_default(o):
+    if isinstance(o, Path):
+        return str(o)
+    if isinstance(o, bytes):
+        try:
+            return o.decode("utf-8")
+        except UnicodeDecodeError:
+            return repr(o)
+    if isinstance(o, (datetime, date)):
+        return o.isoformat()
+    raise TypeError(f"{type(o).__name__} 不是 JSON 可序列化类型")
+
 _MACHINE_OUT = None
 _MACHINE_ERR = None
 _MAIN_ARGV: list[str] | None = None
@@ -61,17 +79,71 @@ def _machine_write(channel: str, text: str) -> None:
     else:
         stream.write(text)
 
-def _emit_result(data) -> None:
-    _machine_write("out", json.dumps(_envelope(True, data=data), ensure_ascii=False, indent=2) + "\n")
+def _emit_result(data, meta=None) -> bool:
+    try:
+        text = json.dumps(_envelope(True, data=data, meta=meta),
+                          ensure_ascii=False, indent=2, default=_json_default) + "\n"
+    except Exception:
+        _machine_write("err", json.dumps(_MINIMAL_INTERNAL, ensure_ascii=False, indent=2) + "\n")
+        return False
+    _machine_write("out", text)
+    return True
 
 def _emit_error(code: str, message: str, details=None, retryable: bool = False,
-                suggestion=None) -> None:
+                suggestion=None) -> bool:
     error = {"code": code, "message": message, "retryable": retryable}
     if details is not None:
         error["details"] = details
     if suggestion is not None:
         error["suggestion"] = suggestion
-    _machine_write("err", json.dumps(_envelope(False, error=error), ensure_ascii=False, indent=2) + "\n")
+    try:
+        text = json.dumps(_envelope(False, error=error),
+                          ensure_ascii=False, indent=2, default=_json_default) + "\n"
+    except Exception:
+        _machine_write("err", json.dumps(_MINIMAL_INTERNAL, ensure_ascii=False, indent=2) + "\n")
+        return False
+    _machine_write("err", text)
+    return True
+
+def _error_code(exc: Exception) -> str:
+    """把异常映射到规范错误码总表。显式领域错误优先，再沿 __cause__/__context__ 链向上找。"""
+    if isinstance(exc, PermissionError):
+        return "E_PERMISSION"
+    if isinstance(exc, FileNotFoundError):
+        return "E_NOT_FOUND"
+    if isinstance(exc, OSError):
+        return "E_IO"
+    if isinstance(exc, (MemoryNotInView, ViewScopeError, SharedMemoryError)):
+        return "E_NOT_FOUND"
+    if isinstance(exc, (PromoteConflict, PromoteMemoryConflict, RegisterConflict, ConfigConflict)):
+        return "E_VALIDATION"
+    if isinstance(exc, (SharedSkillsEscape, BlockError)):
+        return "E_VALIDATION"
+    if isinstance(exc, (PluginManifestError, PluginIdentityError, PluginContainmentError)):
+        return "E_VALIDATION"
+    if isinstance(exc, RemoteUnavailable):
+        return "E_NETWORK"
+    if isinstance(exc, CliUnavailable):
+        return "E_EXTERNAL_TOOL"
+    if isinstance(exc, ValueError):
+        return "E_VALIDATION"
+    cause = exc.__cause__ or exc.__context__
+    if cause is not None and cause is not exc:
+        code = _error_code(cause)
+        if code != "E_INTERNAL":
+            return code
+    return "E_INTERNAL"
+
+@contextmanager
+def _stdout_to_stderr():
+    """json 模式：执行期间模块的进度 print（dry-run 的 [dry-run]/[plan]）改道 stderr，
+    保住 stdout 只有最终信封。异常路径会先恢复再出，_emit_* 总在恢复后调用。"""
+    real = sys.stdout
+    sys.stdout = sys.stderr
+    try:
+        yield
+    finally:
+        sys.stdout = real
 
 def _json_requested(argv: list[str] | None) -> bool:
     if argv is None:
@@ -212,10 +284,73 @@ def _lint(vault, exempt: set[str]) -> list[str]:
             errs.append(f"{m.name}: sensitive:true 记忆不应进入金库")
     return errs
 
+def _status_json(vault_root: Path, host, check: bool, git_text: str) -> int:
+    data = {"git": git_text, "skill_links": [], "opencode_links": [], "gitlinks": []}
+    try:
+        dev = load_device(vault_root, host or current_host())
+    except FileNotFoundError:
+        if check:
+            _emit_error("E_NOT_FOUND", "status --check 停止：本机没有 device.toml",
+                        suggestion="先跑 `hub register` 绑定金库，或显式传 --host <主机>")
+            return 1
+        return 0 if _emit_result(data) else 1
+    try:
+        rows = link_status(vault_root, dev)
+    except SharedSkillsEscape as e:
+        _emit_error(_error_code(e), str(e), retryable=False)
+        return 1
+    data["skill_links"] = [[state, label] for state, label in rows]
+    try:
+        oc_rows = opencode_skill_status(vault_root, dev, _hub_root())
+    except (PluginManifestError, PluginIdentityError, PluginContainmentError) as e:
+        _emit_error(_error_code(e), str(e), retryable=False)
+        return 1
+    data["opencode_links"] = [[state, label] for state, label in oc_rows]
+    if not check:
+        return 0 if _emit_result(data) else 1
+    data["check"] = True
+    links = tracked_gitlinks(vault_root)
+    data["gitlinks"] = list(links)
+    vh = view_health(vault_root, dev, _hub_root())
+    try:
+        ph = plugin_health(vault_root, dev)
+    except (PluginManifestError, PluginIdentityError, PluginContainmentError,
+            PluginRepoUnavailable, CliUnavailable, UnsupportedVaultVersion) as e:
+        _emit_error(_error_code(e), str(e), retryable=False)
+        return 1
+    rows_all = rows + oc_rows + vh
+    bad_rows = [r for r in rows_all if r[0] != "ok"]
+    bad_plugin = [h for h in ph if h.state != "ok"]
+    health = {"ok": not links and not bad_rows and not bad_plugin,
+              "rows": [[state, label] for state, label in rows_all],
+              "plugin": [[h.state, f"{h.name}@{h.tool}"] for h in ph]}
+    data["health"] = health
+    if not health["ok"]:
+        parts = []
+        if links:
+            parts.append(f"{len(links)} 个 gitlink")
+        if bad_rows:
+            parts.append(f"{len(bad_rows)} 项不健康")
+        if bad_plugin:
+            parts.append(f"{len(bad_plugin)} 个插件不健康")
+        _emit_error("E_VALIDATION", "status --check 不健康：" + "；".join(parts),
+                    details={"gitlinks": list(links),
+                             "rows": [[state, label] for state, label in rows_all],
+                             "plugin": [[h.state, f"{h.name}@{h.tool}"] for h in ph]},
+                    retryable=False,
+                    suggestion="按 details 逐项处理：`hub register` 重建链接、"
+                               "`hub refresh` 重算视图、gitlink 用 `hub induct` 纳入")
+        return 1
+    return 0 if _emit_result(data) else 1
+
 def _cmd_status(args) -> int:
     vault_root = Path(args.vault)
-    print(GitBackend(vault_root).status(), end="")
+    json_mode = getattr(args, "json", False)
     check = getattr(args, "check", False)
+    git_text = GitBackend(vault_root).status()
+    if json_mode:
+        return _status_json(vault_root, args.host, check, git_text)
+    print(git_text, end="")
     try:
         dev = load_device(vault_root, args.host or current_host())
     except FileNotFoundError:
@@ -270,32 +405,54 @@ def _hub_root() -> Path:
 
 def _cmd_register(args) -> int:
     vault_root = Path(args.vault); host = args.host or current_host()
+    json_mode = getattr(args, "json", False)
     w = Writer(dry_run=args.dry_run); hub_root = _hub_root()
     try:
-        dev = load_device(vault_root, host)
-        # ---- 预检/准备（只读；任何确定性错误在此抛、零写入）----
-        to_link, ensured = plan_register_skills(vault_root, dev)
-        hm_links = plan_hub_memory_skill(hub_root, dev)
-        check_link_collisions(to_link, hm_links)     # 跨来源同名（如金库也有 hub-memory）→ 零写
-        oc_link, oc_ensured = plan_link_opencode_skills(vault_root, dev, hub_root)  # opencode 自己的落点
-        check_config(vault_root, host)
-        writes, warnings, oc_plan = prepare_memory_views(vault_root, dev)
-        plugin_plan = prepare_plugin_register(vault_root, dev)          # 预检并入 prepare
-        hint = stale_skills_paths_hint(dev, vault_root)
-        if hint:
-            warnings.append(hint)
-        # ---- 提交（预检全过之后才动笔）----
-        commit_register_skills(to_link, w)
-        commit_hub_memory_skill(hm_links, w)
-        commit_link_opencode_skills(oc_link, w)
-        write_config(vault_root, host, hub_root, w)
-        commit_memory_views(writes, oc_plan, w)
-        prep = execute_plugin_plan(plugin_plan, w)                      # 提交期执行 CLI
+        with _stdout_to_stderr() if json_mode else nullcontext():
+            dev = load_device(vault_root, host)
+            # ---- 预检/准备（只读；任何确定性错误在此抛、零写入）----
+            to_link, ensured = plan_register_skills(vault_root, dev)
+            hm_links = plan_hub_memory_skill(hub_root, dev)
+            check_link_collisions(to_link, hm_links)     # 跨来源同名（如金库也有 hub-memory）→ 零写
+            oc_link, oc_ensured = plan_link_opencode_skills(vault_root, dev, hub_root)  # opencode 自己的落点
+            check_config(vault_root, host)
+            writes, warnings, oc_plan = prepare_memory_views(vault_root, dev)
+            plugin_plan = prepare_plugin_register(vault_root, dev)          # 预检并入 prepare
+            hint = stale_skills_paths_hint(dev, vault_root)
+            if hint:
+                warnings.append(hint)
+            # ---- 提交（预检全过之后才动笔）----
+            commit_register_skills(to_link, w)
+            commit_hub_memory_skill(hm_links, w)
+            commit_link_opencode_skills(oc_link, w)
+            write_config(vault_root, host, hub_root, w)
+            commit_memory_views(writes, oc_plan, w)
+            prep = execute_plugin_plan(plugin_plan, w)                      # 提交期执行 CLI
     except (RegisterConflict, FileNotFoundError, LinkError, SharedSkillsEscape,
             ConfigConflict, ViewScopeError, SharedMemoryError, BlockError,
             PluginManifestError, PluginIdentityError, PluginContainmentError,
             CliUnavailable, UnsupportedVaultVersion) as e:
+        if json_mode:
+            _emit_error(_error_code(e), str(e), retryable=False)
+            return 1
         print(e); return 1
+    if json_mode:
+        data = {"dry_run": bool(args.dry_run),
+                "skills_linked": len(ensured),
+                "opencode_links": len(oc_ensured),
+                "plugin": {"succeeded": len(prep.succeeded),
+                           "skipped": len(prep.skipped),
+                           "failed": len(prep.failed)}}
+        if prep.failed:
+            _emit_error("E_PARTIAL_FAILURE",
+                        f"链接已就位，但 {len(prep.failed)} 个插件动作失败",
+                        details={"failed": [[i, why] for i, why in prep.failed],
+                                 "succeeded": list(prep.succeeded),
+                                 "skipped": list(prep.skipped)},
+                        retryable=True,
+                        suggestion="查看 details.failed 里的原因，修复后重试 `hub register`")
+            return 1
+        return 0 if _emit_result(data, meta={"warnings": warnings}) else 1
     verb = '预计就位' if args.dry_run else '已就位'
     print(f"{verb} {len(ensured)} 个 skill 链接 + hub-memory")
     if oc_ensured:
@@ -310,18 +467,39 @@ def _cmd_register(args) -> int:
 
 def _cmd_refresh(args) -> int:
     vault_root = Path(args.vault); host = args.host or current_host()
+    json_mode = getattr(args, "json", False)
     dry = getattr(args, "dry_run", False); w = Writer(dry_run=dry)
     try:
-        dev = load_device(vault_root, host)
-        writes, warnings, oc_plan = prepare_memory_views(vault_root, dev)
-        plugin_plan = prepare_plugin_refresh(vault_root, dev)
-        commit_memory_views(writes, oc_plan, w)
-        prep = execute_plugin_plan(plugin_plan, w)
+        with _stdout_to_stderr() if json_mode else nullcontext():
+            dev = load_device(vault_root, host)
+            writes, warnings, oc_plan = prepare_memory_views(vault_root, dev)
+            plugin_plan = prepare_plugin_refresh(vault_root, dev)
+            commit_memory_views(writes, oc_plan, w)
+            prep = execute_plugin_plan(plugin_plan, w)
     except (FileNotFoundError, ViewScopeError, SharedMemoryError, BlockError,
             PluginBumpNeeded, PluginRepoDirty, PluginManifestError, PluginIdentityError,
             PluginRepoUnavailable, PluginContainmentError, CliUnavailable,
             UnsupportedVaultVersion) as e:
+        if json_mode:
+            _emit_error(_error_code(e), str(e), retryable=False)
+            return 1
         print(e); return 1
+    if json_mode:
+        data = {"dry_run": dry, "written": len(writes),
+                "warnings": warnings,
+                "plugin": {"succeeded": len(prep.succeeded),
+                           "skipped": len(prep.skipped),
+                           "failed": len(prep.failed)}}
+        if prep.failed:
+            _emit_error("E_PARTIAL_FAILURE",
+                        f"视图已重算，但 {len(prep.failed)} 个插件动作失败",
+                        details={"failed": [[i, why] for i, why in prep.failed],
+                                 "succeeded": list(prep.succeeded),
+                                 "skipped": list(prep.skipped)},
+                        retryable=True,
+                        suggestion="查看 details.failed 里的原因，修复后重试 `hub refresh`")
+            return 1
+        return 0 if _emit_result(data) else 1
     summary = {"written": len(writes), "warnings": warnings}
     print(f"memory 视图已重算: {summary}")
     for x in summary.get("warnings", []):
@@ -333,31 +511,57 @@ def _cmd_refresh(args) -> int:
 def _cmd_promote(args) -> int:
     vault_root = Path(args.vault)
     host = args.host or current_host()
+    json_mode = getattr(args, "json", False)
     try:
-        load_device(vault_root, host)                      # 校验 host 存在
-        dest = promote_skill(vault_root, host, args.tool, args.name,
-                             Writer(dry_run=args.dry_run))
+        with _stdout_to_stderr() if json_mode else nullcontext():
+            load_device(vault_root, host)                      # 校验 host 存在
+            dest = promote_skill(vault_root, host, args.tool, args.name,
+                                 Writer(dry_run=args.dry_run))
     except (PromoteConflict, FileNotFoundError, ValueError, SharedSkillsEscape) as e:
+        if json_mode:
+            _emit_error(_error_code(e), str(e), retryable=False)
+            return 1
         print(e)
         return 1
+    if json_mode:
+        return 0 if _emit_result({"dry_run": bool(args.dry_run), "dest": dest}) else 1
     print(f"{'预计提升' if args.dry_run else '已提升'} → {dest}")
     return 0
 
 def _cmd_promote_memory(args) -> int:
+    json_mode = getattr(args, "json", False)
     if bool(args.name) == bool(args.all):
-        print("--name 与 --all 必须二选一"); return 1
+        if json_mode:
+            _emit_error("E_VALIDATION", "--name 与 --all 必须二选一",
+                        suggestion="传 --name <名> 提升单条，或 --all 批量提升全部")
+            return 2
+        print("--name 与 --all 必须二选一"); return 2
     vault_root = Path(args.vault); host = args.host or current_host()
     w = Writer(dry_run=args.dry_run)
     try:
-        load_device(vault_root, host)
-        if args.all:
-            done = promote_memory_all(vault_root, host, w)
-            print(f"{'预计提升' if args.dry_run else '已提升'} {len(done)} 条记忆")
-        else:
-            dest = promote_memory(vault_root, host, args.name, w)
-            print(f"{'预计提升' if args.dry_run else '已提升'} → {dest}")
+        with _stdout_to_stderr() if json_mode else nullcontext():
+            load_device(vault_root, host)
+            if args.all:
+                done = promote_memory_all(vault_root, host, w)
+                count = len(done)
+            else:
+                dest = promote_memory(vault_root, host, args.name, w)
+                count = 1
     except (PromoteMemoryConflict, FileNotFoundError, ValueError) as e:
+        if json_mode:
+            _emit_error(_error_code(e), str(e), retryable=False)
+            return 1
         print(e); return 1
+    if json_mode:
+        data = {"dry_run": bool(args.dry_run), "name": args.name,
+                "all": bool(args.all), "count": count}
+        if not args.all:
+            data["dest"] = dest
+        return 0 if _emit_result(data) else 1
+    if args.all:
+        print(f"{'预计提升' if args.dry_run else '已提升'} {len(done)} 条记忆")
+    else:
+        print(f"{'预计提升' if args.dry_run else '已提升'} → {dest}")
     return 0
 
 def _cmd_collect(args) -> int:
@@ -617,9 +821,8 @@ def _cmd_memory_read(args) -> int:
             return 1
         print(e); return 1
     if json_mode:
-        _emit_result({"name": args.name, "tool": args.tool, "host": host,
-                      "vault": str(Path(vault)), "body": body})
-        return 0
+        return 0 if _emit_result({"name": args.name, "tool": args.tool, "host": host,
+                                  "vault": str(Path(vault)), "body": body}) else 1
     print(body, end="")
     return 0
 
