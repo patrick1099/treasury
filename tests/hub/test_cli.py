@@ -69,8 +69,8 @@ def test_sync_lint_failure_returns_1(tmp_path):
     rc = main(["sync", "--vault", str(vault), "--host", "h1"])
     assert rc == 1
 
-def test_sync_conflict_returns_2(tmp_path):
-    # 远端与本地 clone 在同一文件(vault.toml)分叉 -> acquire 内 git pull 非 ff 冲突 -> sync 返回 2
+def test_sync_conflict_returns_1(tmp_path):
+    # 远端与本地 clone 在同一文件(vault.toml)分叉 -> acquire 内 git pull 非 ff 冲突 -> sync 返回 1(E_VALIDATION)
     remote = tmp_path / "remote"; _mk_vault(remote, "h1"); _init_git(remote)
     _git(remote, "add", "-A"); _git(remote, "commit", "-qm", "seed")
     clone = tmp_path / "clone"
@@ -84,7 +84,7 @@ def test_sync_conflict_returns_2(tmp_path):
     (clone / "vault.toml").write_text("version = 3\n", encoding="utf-8")
     _git(clone, "commit", "-qam", "local change")
     rc = main(["sync", "--vault", str(clone), "--host", "h1"])
-    assert rc == 2
+    assert rc == 1
 
 def _set_collect_sources(vault: Path, host: str, *dirs: Path) -> None:
     """给 h1 的 [sources.claude] 段追加 memory 源(collect 目前只读 claude 的源)。"""

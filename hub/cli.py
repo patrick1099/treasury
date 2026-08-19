@@ -11,7 +11,7 @@ from hub.derive import render_memory_index
 from hub.scope import lint_scope
 from hub.links import lint_raw_paths, load_lint_exempt
 from hub.backend import (GitBackend, ConflictError, RemoteUnavailable,
-                         GitlinkTracked, tracked_gitlinks)
+                         GitlinkTracked, ChatsTracked, tracked_gitlinks)
 from hub.collect import plan_deletions, preflight, run_all
 from hub.collect.errors import MissingSourceError
 from hub.frontmatter import FrontmatterError
@@ -129,6 +129,8 @@ def _error_code(exc: Exception) -> str:
         return "E_NOT_FOUND"
     if isinstance(exc, (FrontmatterError, SchemaMigrationError, MigrationInputError,
                         InductionError)):
+        return "E_VALIDATION"
+    if isinstance(exc, (GitlinkTracked, ChatsTracked)):
         return "E_VALIDATION"
     if isinstance(exc, subprocess.CalledProcessError):
         return "E_EXTERNAL_TOOL"
@@ -259,7 +261,7 @@ Do NOT use for:
 |---|---|
 | 记忆读不到（E_NOT_FOUND） | 确认名字拼写 / scope 含 global 或本机 class/project / tool 归属；先跑 `hub register` 刷新视图 |
 | 没配 vault 读不了 | 跑 `hub register` 绑定金库，或显式传 `--vault` |
-| git 冲突（sync 返回 2） | 手工解决冲突后重试 |
+| git 冲突（sync 返回 1） | 手工解决冲突后重试 |
 | 参数拼错（E_VALIDATION） | `hub --help` 看用法 |
 
 ❌ 错：`hub memory-read --tool claude --name 不存在`
@@ -905,37 +907,119 @@ def sync_message(args) -> str:
 
 def _cmd_sync(args) -> int:
     vault_root = Path(args.vault)
+    json_mode = getattr(args, "json", False)
     b = GitBackend(vault_root)
     try:
-        b.acquire()
+        with _stdout_to_stderr() if json_mode else nullcontext():
+            b.acquire()
     except RemoteUnavailable as e:          # 必须排在 ConflictError 前面(它是子类)
+        if json_mode:
+            _emit_error("E_NETWORK", f"sync 停止:够不着远端(网络/超时/认证):\n{e}",
+                        retryable=True,
+                        suggestion="检查网络/认证后重试 `hub sync`")
+            return 1
         print("sync 停止:够不着远端(网络/超时/认证)——不是内容冲突,自动重试过了仍不通,手工解冲突没用")
         print(e)
-        return 2
+        return 1
     except ConflictError as e:
+        if json_mode:
+            try:
+                conflicted = b._conflicted_files() or []
+            except Exception:
+                conflicted = None
+            _emit_error("E_VALIDATION", f"sync 停止:git 冲突,需手工解决:\n{e}",
+                        details={"conflicted": conflicted} if conflicted is not None else None,
+                        retryable=False,
+                        suggestion="手工解决冲突后 `hub sync` 重试")
+            return 1
         print("sync 停止:git 冲突,请手工解决后 `hub sync` 重试")
         print(e)
-        return 2
+        return 1
     vault = load_vault(vault_root)
     errs = _lint(vault, load_lint_exempt(vault_root))
     if errs:
+        if json_mode:
+            _emit_error("E_VALIDATION", "sync 停止:lint 失败(敏感/裸路径/scope)",
+                        details={"errors": errs},
+                        retryable=False,
+                        suggestion="修记忆内容或加豁免后重试 `hub sync`")
+            return 1
         print("sync 停止:lint 失败(敏感/裸路径/scope):")
         for e in errs:
             print("  -", e)
         return 1
-    _write_index(vault_root, vault, Writer())
+    msg = sync_message(args)
+    committed = False
     try:
-        b.publish(sync_message(args))
+        with _stdout_to_stderr() if json_mode else nullcontext():
+            _write_index(vault_root, vault, Writer())
+            committed = bool(b.status().strip())
+            b.publish(msg)
     except GitlinkTracked as e:
+        if json_mode:
+            _emit_error(_error_code(e), str(e),
+                        details={"paths": e.paths},
+                        retryable=False,
+                        suggestion="跑 `hub induct --vault <金库> <路径>` 正规纳入后重试")
+            return 1
+        print("sync 停止:")
+        print(e, end="")
+        return 1
+    except ChatsTracked as e:
+        if json_mode:
+            _emit_error(_error_code(e), str(e),
+                        details={"paths": e.paths},
+                        retryable=False,
+                        suggestion="跑 `git rm --cached -r <路径>` 解除跟踪后重试")
+            return 1
         print("sync 停止:")
         print(e, end="")
         return 1
     except RemoteUnavailable as e:
+        if json_mode:
+            _emit_error("E_PARTIAL_FAILURE",
+                        f"sync 停止:本地已提交,但推不上去:\n{e}",
+                        details={"state_preserved": True},
+                        retryable=True,
+                        suggestion="改动已安全留在本地,稍后重试 `hub sync` 即可")
+            return 1
         print("sync 停止:本地已提交,但推不上去(网络/超时/认证),自动重试过了仍不通;稍后再 `hub sync` 即可")
         print(e)
-        return 2
+        return 1
+    data = {"message": msg, "committed": committed, "refreshed": False,
+            "git_clean": not bool(b.status().strip())}
     if getattr(args, "refresh", False):
-        return _cmd_refresh(args)          # 传播 refresh 的返回码，不再吞掉失败
+        if not json_mode:
+            return _cmd_refresh(args)          # 传播 refresh 的返回码，不再吞掉失败
+        try:
+            with _stdout_to_stderr():
+                dev = load_device(vault_root, args.host or current_host())
+                writes, warnings, oc_plan = prepare_memory_views(vault_root, dev)
+                plugin_plan = prepare_plugin_refresh(vault_root, dev)
+                commit_memory_views(writes, oc_plan, Writer())
+                prep = execute_plugin_plan(plugin_plan, Writer())
+        except (FileNotFoundError, ViewScopeError, SharedMemoryError, BlockError,
+                PluginBumpNeeded, PluginRepoDirty, PluginManifestError, PluginIdentityError,
+                PluginRepoUnavailable, PluginContainmentError, CliUnavailable,
+                UnsupportedVaultVersion) as e:
+            _emit_error(_error_code(e), str(e), retryable=False)
+            return 1
+        if prep.failed:
+            _emit_error("E_PARTIAL_FAILURE",
+                        f"sync+refresh:视图已重算,但 {len(prep.failed)} 个插件动作失败",
+                        details={"failed": [[i, why] for i, why in prep.failed],
+                                 "succeeded": list(prep.succeeded),
+                                 "skipped": list(prep.skipped)},
+                        retryable=True,
+                        suggestion="查看 details.failed 里的原因,修复后重试 `hub sync --refresh`")
+            return 1
+        data.update({"refreshed": True, "written": len(writes), "warnings": warnings,
+                     "plugin": {"succeeded": len(prep.succeeded),
+                                "skipped": len(prep.skipped),
+                                "failed": len(prep.failed)}})
+        return 0 if _emit_result(data) else 1
+    if json_mode:
+        return 0 if _emit_result(data) else 1
     print("提示：若 shared/ 有变化，运行 `hub refresh` 重算 memory 视图。")
     return 0
 
