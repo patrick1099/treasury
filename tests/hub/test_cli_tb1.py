@@ -17,7 +17,8 @@ from hub.memread import MemoryNotInView
 from hub.vaultpaths import SharedSkillsEscape
 from hub.textblock import BlockError
 from hub.plugin_manifest import PluginManifestError, PluginIdentityError
-from hub.plugin_ops import PluginContainmentError
+from hub.plugin_ops import PluginContainmentError, PluginRepoUnavailable
+from hub.vault import UnsupportedVaultVersion
 from hub.plugin_cli import CliUnavailable
 
 
@@ -86,6 +87,8 @@ def test_error_code_domain_errors():
     assert cli._error_code(RemoteUnavailable("x")) == "E_NETWORK"
     assert cli._error_code(CliUnavailable("x")) == "E_EXTERNAL_TOOL"
     assert cli._error_code(ValueError("x")) == "E_VALIDATION"
+    assert cli._error_code(PluginRepoUnavailable("x")) == "E_NETWORK"
+    assert cli._error_code(UnsupportedVaultVersion("x")) == "E_PLATFORM"
     assert cli._error_code(RuntimeError("x")) == "E_INTERNAL"
 
 

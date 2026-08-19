@@ -123,8 +123,10 @@ def _error_code(exc: Exception) -> str:
         return "E_VALIDATION"
     if isinstance(exc, (PluginManifestError, PluginIdentityError, PluginContainmentError)):
         return "E_VALIDATION"
-    if isinstance(exc, RemoteUnavailable):
+    if isinstance(exc, (RemoteUnavailable, PluginRepoUnavailable)):
         return "E_NETWORK"
+    if isinstance(exc, UnsupportedVaultVersion):
+        return "E_PLATFORM"
     if isinstance(exc, CliUnavailable):
         return "E_EXTERNAL_TOOL"
     if isinstance(exc, MissingSourceError):
@@ -193,9 +195,9 @@ def _add_output_flags(parser) -> None:
 AI_HELP = """---
 name: hub
 description: >
-  hub CLI——跨工具共享记忆金库的读写入口。memory-read 等命令按 CLI-AI 规范输出
-  统一信封；其余命令保持人类可读文本。Use when user asks to read shared memory,
-  sync the vault, register skills, promote memories, or manage the hub.
+  hub CLI——跨工具共享记忆金库的读写入口。所有命令支持 --json 输出统一信封
+  {ok,data,error,meta}；人类模式保持可读文本。Use when user asks to read shared
+  memory, sync the vault, register skills, promote memories, or manage the hub.
 ai_help_version: 0.1.0
 ---
 
@@ -225,9 +227,14 @@ Do NOT use for:
 
 - `memory-read --vault P --host H --tool T --name N`：读一条共享记忆的正文。
   默认人类模式 stdout 只有正文；`--json` 时 stdout 是 `{ok,data,error,meta}` 信封。
-- `sync`：git 拉取 + lint + 写 MEMORY.md 索引 + 推送。
-- `collect`：把本机配置的源镜像进金库备份区。
+- `status [--check]`：金库 git 状态 + skill/插件链接健康；`--check` 不健康返回 1。
+- `sync [--refresh]`：git 拉取 + lint + 写 MEMORY.md 索引 + 推送；`--refresh` 串联刷新。
+- `collect`：把本机配置的源镜像进金库备份区（有删除需 `--yes` 确认）。
 - `register` / `refresh` / `promote` / `promote-memory`：链接与提升。
+- `bootstrap`：换新机时把 shared/skills 的加载器 skill 装进各工具。
+- `induct <路径...>`：把金库内带 .git 的目录正规纳入父仓跟踪（存文件，不留 gitlink）。
+- `migrate-schema --to N` / `migrate-plugins --src S --input I` /
+  `cutover-plugins` / `retire-plugin-sources --src S --input I`：插件/结构迁移。
 - `secrets`：密钥库。exec 给 AI（可 --json）；run/render/unlock 只给人。
 
 ## Secrets（密钥库）
@@ -271,14 +278,26 @@ Do NOT use for:
 | 退出码 | 含义 |
 |---|---|
 | 0 | 成功 |
-| 1 | 运行失败（E_NOT_FOUND / E_INTERNAL / E_INTERRUPTED 等） |
-| 2 | 参数/用法错误（E_VALIDATION，含 argparse 解析失败） |
+| 1 | 运行失败（业务/内容/网络/权限，含未预期异常 E_INTERNAL） |
+| 2 | 参数/用法错误（E_VALIDATION 的 rc2 形态，含 argparse 解析失败） |
+
+`E_VALIDATION` 分两种退出码：**rc2** 是参数/用法形态（promote-memory 的
+--name/--all 必须二选一、induct 路径非法、secrets run 的 `--` 后缺命令、
+argparse 解析失败）；**rc1** 是运行期业务/内容判定（status --check 不健康、
+collect 需确认/坏记忆、sync 冲突或 lint 失败、retire-plugin-sources 被拒、
+induct 内容不合法）——两者共同点是"输入或内容不合规范"，只是 rc2 在参数层、
+rc1 在内容层。
 
 | error.code | 含义 |
 |---|---|
-| `E_VALIDATION` | 参数/用法错误 |
-| `E_NOT_FOUND` | 记忆不存在或越 scope |
-| `E_EXTERNAL_TOOL` | secrets exec/run 的子进程以非零退出码结束 |
+| `E_VALIDATION` | 参数/用法（rc2）或业务/内容校验失败（rc1） |
+| `E_NOT_FOUND` | 目标不存在（记忆/device/金库源/插件 profile 等） |
+| `E_NETWORK` | 网络/连接失败（sync 远端不可达、插件源仓不可用） |
+| `E_PLATFORM` | 平台/环境不支持（金库 schema 版本高于本 hub 所知） |
+| `E_IO` | 读写/存储失败（非权限） |
+| `E_PERMISSION` | 权限不足 |
+| `E_PARTIAL_FAILURE` | 部分成功（register/refresh/sync 的插件动作、migrate-plugins/cutover） |
+| `E_EXTERNAL_TOOL` | 外部命令/子进程失败（secrets exec/run、工具 CLI 缺失） |
 | `E_INTERRUPTED` | 用户中断 |
 | `E_INTERNAL` | 未预期内部错误 |
 
