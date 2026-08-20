@@ -273,11 +273,12 @@ def test_bootstrap_without_loader_skills_returns_1(tmp_path):
 
 # ---- Task 11 review: Finding 2 (⚠ on a GBK console) + Finding 3 (dry-run wording) ----
 
-def test_secret_scan_warning_survives_gbk_stdout(tmp_path, monkeypatch):
-    """本机 py -3 -c "print(sys.stdout.encoding)" 报 gbk,gbk 编不出 U+26A0(⚠)。
-    secrets-scan 命中时 cli.py 直接 print() 含 ⚠ 的警告——一旦命中,唯一该报警的
-    时刻反而以 UnicodeEncodeError 崩溃。用一个 encoding=gbk/errors=strict 的
-    TextIOWrapper 顶替 sys.stdout 来复现同款失败,不依赖真实控制台编码。"""
+def test_tty_gbk_stdout_is_reconfigured_to_utf8(tmp_path, monkeypatch):
+    """D1 人类通道全输出 UTF-8 收敛:TTY 分支不再保持 gbk,stdout/stderr 无论
+    TTY/非 TTY 一律 reconfigure(encoding="utf-8", errors="replace")。用一个
+    encoding=gbk/errors=strict/isatty=True 的 TextIOWrapper 顶替 sys.stdout,
+    模拟真实 gbk 控制台,验证 main() 把它重配成 UTF-8 后 ⚠(U+26A0) 与中文都能
+    完整落盘,不再崩 UnicodeEncodeError。"""
     v = _mk_backup_vault(tmp_path)
     src = tmp_path / "toolmem"
     src.mkdir()
@@ -297,7 +298,10 @@ def test_secret_scan_warning_survives_gbk_stdout(tmp_path, monkeypatch):
     finally:
         fake_stdout.flush()
     assert rc == 0
-    printed = buf.getvalue().decode("gbk")
+    assert fake_stdout.encoding == "utf-8"
+    assert fake_stdout.errors == "replace"
+    printed = buf.getvalue().decode("utf-8")
+    assert "\u26a0" in printed
     assert "疑似密钥" in printed        # 警告真的印出来了，不是被吞掉
 
 def test_collect_validates_vault_before_writing_anything(tmp_path):

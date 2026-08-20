@@ -1228,7 +1228,7 @@ def _make_console_output_tolerant() -> None:
             continue
         try:
             if getattr(stream, "isatty", lambda: False)():
-                reconfigure(errors="replace")
+                reconfigure(encoding="utf-8", errors="replace")
             else:
                 reconfigure(encoding="utf-8", errors="replace")
         except (ValueError, OSError):
