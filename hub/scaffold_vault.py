@@ -214,7 +214,8 @@ def main(argv: list[str]) -> int:
     _make_console_output_tolerant()
     if _handle_ai_help(_MAIN_ARGV):
         return 0
-    p = _ScaffoldParser(prog="hub-scaffold", description="建一个空金库(两区结构)")
+    p = _ScaffoldParser(prog="hub-scaffold", description="建一个空金库(两区结构)", epilog="LLMs/agents: run 'hub-scaffold --ai-help' for usage guidance.")
+
     p.add_argument("vault", help="金库目录(空目录，或一个已有金库——加新设备用)")
     p.add_argument("host", help="本机设备名，通常是 socket.gethostname().lower()")
     p.add_argument("--force", action="store_true",
