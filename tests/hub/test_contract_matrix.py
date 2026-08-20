@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import pytest
 from hub import cli
+from hub import cliout
 from hub.cli import main
 from hub.memread import read_memory
 
@@ -25,14 +26,14 @@ def _setup(vault, host, name, body):
 @pytest.fixture
 def machine_out(monkeypatch):
     buf = io.BytesIO()
-    monkeypatch.setattr(cli, "_MACHINE_OUT", buf)
+    monkeypatch.setattr(cliout, "_MACHINE_OUT", buf)
     return buf
 
 
 @pytest.fixture
 def machine_err(monkeypatch):
     buf = io.BytesIO()
-    monkeypatch.setattr(cli, "_MACHINE_ERR", buf)
+    monkeypatch.setattr(cliout, "_MACHINE_ERR", buf)
     return buf
 
 
@@ -190,7 +191,7 @@ def test_help_line(tmp_path, capsys):
 
 def test_machine_sink_injectable(tmp_path, monkeypatch):
     out = io.BytesIO()
-    monkeypatch.setattr(cli, "_MACHINE_OUT", out)
+    monkeypatch.setattr(cliout, "_MACHINE_OUT", out)
     _setup(tmp_path, "h1", "a", "正文\n")
     assert main(["memory-read", "--vault", str(tmp_path), "--host", "h1",
                  "--tool", "claude", "--name", "a", "--json"]) == 0

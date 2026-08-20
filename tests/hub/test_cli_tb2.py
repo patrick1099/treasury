@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 import pytest
 from hub import cli
+from hub import cliout
 from hub.cli import main
 from hub.plugin_migrate import (MigrationPlan, MigrationReport, RetirePlan, RetireReport,
                                 RetireAction, MigrationInputError)
@@ -14,14 +15,14 @@ from hub.plugin_ops import PluginPlan, PluginRunReport
 @pytest.fixture
 def machine_out(monkeypatch):
     buf = io.BytesIO()
-    monkeypatch.setattr(cli, "_MACHINE_OUT", buf)
+    monkeypatch.setattr(cliout, "_MACHINE_OUT", buf)
     return buf
 
 
 @pytest.fixture
 def machine_err(monkeypatch):
     buf = io.BytesIO()
-    monkeypatch.setattr(cli, "_MACHINE_ERR", buf)
+    monkeypatch.setattr(cliout, "_MACHINE_ERR", buf)
     return buf
 
 

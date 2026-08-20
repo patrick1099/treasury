@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from hub import cli, secrets_cli
+from hub import cliout
 from hub.cli import main
 from hub.secrets_store import SecretsError
 
@@ -13,14 +14,14 @@ from hub.secrets_store import SecretsError
 @pytest.fixture
 def machine_out(monkeypatch):
     buf = io.BytesIO()
-    monkeypatch.setattr(cli, "_MACHINE_OUT", buf)
+    monkeypatch.setattr(cliout, "_MACHINE_OUT", buf)
     return buf
 
 
 @pytest.fixture
 def machine_err(monkeypatch):
     buf = io.BytesIO()
-    monkeypatch.setattr(cli, "_MACHINE_ERR", buf)
+    monkeypatch.setattr(cliout, "_MACHINE_ERR", buf)
     return buf
 
 
