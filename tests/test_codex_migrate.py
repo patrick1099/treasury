@@ -209,26 +209,26 @@ def test_import_remaps_username_in_sessions_and_sqlite(tmp_path):
     # 会话 jsonl 里塞两种形态的绝对路径
     write_file(
         source_profile / "sessions" / "2026" / "s.jsonl",
-        json.dumps({"cwd": "<repo-root>\\proj", "p": "/Users/<user>/x"}) + "\n",
+        json.dumps({"cwd": "C:\\Users\\bob\\proj", "p": "/Users/bob/x"}) + "\n",
     )
     # state 库的 threads 表带真实路径列
     conn = sqlite3.connect(str(source_profile / "state_5.sqlite"))
     conn.execute("CREATE TABLE threads(id TEXT, rollout_path TEXT, cwd TEXT)")
     conn.execute(
         "INSERT INTO threads VALUES(?,?,?)",
-        ("t1", "<repo-root>\\.codex\\sessions\\s.jsonl", "<repo-root>\\proj"),
+        ("t1", "C:\\Users\\bob\\.codex\\sessions\\s.jsonl", "C:\\Users\\bob\\proj"),
     )
     conn.commit()
     conn.close()
 
     codex_migrate.export_package(source_profile, package_path)
-    summary = codex_migrate.import_package(package_path, target_profile, remap_user=("dell", "alice"))
+    summary = codex_migrate.import_package(package_path, target_profile, remap_user=("bob", "alice"))
 
     assert summary["remap"]["text_files"] >= 1
     assert summary["remap"]["db_updates"] >= 1
 
     text = (target_profile / "sessions" / "2026" / "s.jsonl").read_text(encoding="utf-8")
-    assert "dell" not in text
+    assert "bob" not in text
     assert "Users\\\\alice\\\\proj" in text or "Users\\alice\\proj" in text
     assert "/Users/alice/x" in text
 
