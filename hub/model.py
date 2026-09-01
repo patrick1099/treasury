@@ -16,14 +16,23 @@ class Memory:
     # 归属 = 金库顶层文件夹名：SHARED 或某台设备的 host
     origin: str | None = None
 
+    # 生命周期字段(阶段 B 从 metadata 升格,见 docs/plans/2026-08-31-hub-memory-layering.md §3.1)。
+    # group 自由分组名;archived 有值即归档,值是 ISO 日期 YYYY-MM-DD;index 目前只允许
+    # expanded(强制展开)。三者缺省 = 不参与:没写即 None,dump 时整行不输出 → 存量 68 个
+    # 没写这三个键的记忆零 diff(渲染走 load 不走 dump,见 plan §3.1 对"留在 extra_metadata
+    # 搭车"那条的反驳)。
+    group: str | None = None
+    archived: str | None = None
+    index: str | None = None
+
     # 模型不认识的 frontmatter 键。**原样带着走,dump 时原样吐回去。**
     #
     # 备份区的立身之本是"别丢"。真实数据里 49/49 条记忆的 metadata 都带
     # originSessionId(curating-memory skill 靠它把记忆追回出生的那次会话)和
-    # node_type —— 而 Memory 只认 7 个字段,dump_memory 只写这 7 个,于是进金库
+    # node_type —— 而 Memory 只认 10 个字段,dump_memory 只写这 10 个,于是进金库
     # 就**全没了**。从金库还原之后,那条线索对每一条记忆都断了。
     #
-    # 模型该认的字段就那 7 个(hub 只对它们做判断);认不出来的**不代表不重要**,
+    # 模型该认的字段就那 10 个(hub 只对它们做判断);认不出来的**不代表不重要**,
     # 只代表**不归 hub 管**。不归它管的东西,它更没有资格丢。
     extra: dict = field(default_factory=dict)             # 未识别的**顶层**键
     extra_metadata: dict = field(default_factory=dict)    # 未识别的 **metadata:** 子键

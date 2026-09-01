@@ -71,7 +71,7 @@ def view_health(vault_root: Path, dev: DeviceProfile, hub_root: Path) -> list[tu
                 embedded = line.split("shared_hash:")[1].replace("-->", "").strip(); break
         rows.append(("ok" if embedded == cur else "stale", str(v)))
     # ④/⑤ 受管块：必须**良构**（恰一对标记），不能只 "hub:begin" in text 就算 ok
-    from hub.textblock import has_one_valid_block
+    from hub.textblock import has_one_valid_block, valid_block_body
     def _block_state(f: Path) -> str:
         if not f.exists():
             return "missing"
@@ -79,12 +79,27 @@ def view_health(vault_root: Path, dev: DeviceProfile, hub_root: Path) -> list[tu
         if has_one_valid_block(t):
             return "ok"
         return "malformed" if ("hub:begin" in t or "hub:end" in t) else "missing"
+    def _hash_block_state(f: Path, cur: str) -> str:
+        """Codex 受管块：良构之外还要验**版本**。只验良构有个洞——四个视图写完了、
+        写 AGENTS.md 时失败，状态仍会误报全绿（plan §3.3）。块内嵌 shared_hash 后
+        与当前 shared 比对：hash 是内容线，结构是结构线，两条都要过。"""
+        if not f.exists():
+            return "missing"
+        t = f.read_text(encoding="utf-8")
+        if not has_one_valid_block(t):
+            return "malformed" if ("hub:begin" in t or "hub:end" in t) else "missing"
+        body = valid_block_body(t) or ""
+        embedded = ""
+        for line in body.splitlines():
+            if "shared_hash:" in line:
+                embedded = line.split("shared_hash:")[1].replace("-->", "").strip(); break
+        return "ok" if embedded == cur else "stale"
     if dev.paths.get("CLAUDE_HOME"):
         cm = Path(dev.paths["CLAUDE_HOME"]) / "CLAUDE.md"
         rows.append((_block_state(cm), str(cm)))
     if dev.paths.get("CODEX_HOME"):                     # Codex **活动**块（override 优先）
         tgt = _codex_agents_target(dev)
-        rows.append((_block_state(tgt), str(tgt)))
+        rows.append((_hash_block_state(tgt, cur), str(tgt)))
     # ⑥ opencode 条目（仅设备显式设 OPENCODE_CONFIG 才报；不因默认路径恰有文件就碰它）
     if dev.paths.get("OPENCODE_CONFIG"):
         ocfg = opencode_config_path(dev)
