@@ -35,7 +35,9 @@ def test_wires_three_views_and_blocks(tmp_path, monkeypatch):
     assert (hub_views_home() / "codex" / "MEMORY.md").exists()
     claude_md = (tmp_path / ".claude" / "CLAUDE.md").read_text(encoding="utf-8")
     assert "hub:begin" in claude_md and "@" in claude_md   # Claude @import 指针
-    assert "`a`" in (tmp_path / ".codex" / "AGENTS.md").read_text(encoding="utf-8")  # Codex 内联
+    agents = (tmp_path / ".codex" / "AGENTS.md").read_text(encoding="utf-8")
+    assert "未分组(1): a" in agents                         # Codex 内联:reference 落折叠段只列名
+    assert "shared_hash: v3:" in agents                     # 受管块嵌哈希,status 才能验版本
 
 def test_codex_override_wins(tmp_path, monkeypatch):
     monkeypatch.setenv("HUB_HOME", str(tmp_path / ".hub"))

@@ -5,8 +5,8 @@ description: 按名读取 hub 金库共享记忆的正文（在本机该工具�
 
 # hub-memory
 
-自动加载的**索引**（CLAUDE.md/AGENTS.md 受管块或视图文件）只给了 name / 一句话
-description / scope；要读某条记忆的**正文**时，用本 skill。
+自动加载的**索引**（CLAUDE.md/AGENTS.md 受管块或视图文件）只给了 name 和一句话
+description；要读某条记忆的**正文**时，用本 skill。
 
 ## 怎么用
 

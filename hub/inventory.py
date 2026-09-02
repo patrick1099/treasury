@@ -68,15 +68,46 @@ def _patch_has(patch_text: str | None, section: str, item: str) -> bool:
     return found
 
 
-def _view_has_memory(tool: str, name: str) -> bool:
+# 视图行的两个定界符,与 hub/memview.py 的 _render_layered_body 一一对应。
+# 改渲染定界必须同时改这里 —— 不同步的后果是健康度静默全线误报。
+EM_DASH = " \u2014 "
+MIDDOT = " \u00b7 "
+
+
+def _view_names(tool: str) -> set[str]:
+    """视图里出现的全部记忆名。
+
+    分层改造(2026-08-31)之后视图有三种行形:
+      展开段  - name 破折号 description
+      折叠段  - 组名(k): name 中点 name 中点 name
+      归档段  - name 中点 name
+    老实现是拿方括号包名和反引号包名去 text 里捞子串 —— 这两种定界符在新格式里一个都不
+    出现,于是**每一条都判成"视图里没有",健康度全线误报**。顺带治掉子串误命中:这里回的
+    是精确的名字集合,不是子串匹配,名字互为前缀时也不会串。"""
     v = _view_path(tool)
     if not v.exists():
-        return False
+        return set()
     try:
         text = v.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return False
-    return f"[{name}]" in text or f"`{name}`" in text
+        return set()
+    names: set[str] = set()
+    for line in text.splitlines():
+        if not line.startswith("- "):
+            continue
+        row = line[2:]
+        if EM_DASH in row:                          # 展开段:name 在首个破折号之前
+            names.add(row.split(EM_DASH, 1)[0].strip())
+            continue
+        head, sep, rest = row.partition(": ")       # 折叠段:剥掉组名与计数前缀
+        if sep and head.endswith(")"):
+            row = rest
+        names.update(x.strip() for x in row.split(MIDDOT) if x.strip())
+    return names
+
+
+def _view_has_memory(tool: str, name: str) -> bool:
+    return name in _view_names(tool)
 
 
 def _view_hash_state(tool: str, cur_hash: str) -> str:
@@ -91,7 +122,9 @@ def _view_hash_state(tool: str, cur_hash: str) -> str:
         if "shared_hash:" in line:
             embedded = line.split("shared_hash:", 1)[1].split("-->", 1)[0].strip()
             return "ok" if embedded == cur_hash else "stale"
-    return "ok"
+    # 视图存在却找不到 shared_hash 行 = 版本不可验证。以前这里回 "ok",等于把
+    # "查不出来"当"没问题"报,和视图根本没刷新是同样的后果,只是账面全绿。
+    return "stale"
 
 
 def _standalone_sources(vault_root: Path, hub_root: Path | None) -> list[tuple[str, Path]]:

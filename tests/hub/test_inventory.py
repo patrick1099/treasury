@@ -2,7 +2,8 @@ import json
 from pathlib import Path
 from hub.cli import main
 from hub.plugin_cli import CliResult
-from hub.inventory import build_inventory
+from hub.inventory import (build_inventory, _view_names, _view_has_memory,
+                           _view_hash_state)
 
 
 def _mk_vault(tmp_path, host="box1") -> Path:
@@ -132,9 +133,10 @@ def test_memory_cells_are_readonly(tmp_path, monkeypatch):
     monkeypatch.setenv("HUB_HOME", str(tmp_path / "hubhome"))
 
     # claude 视图已含 m1；其它工具视图缺失 → actual false
+    # 视图是分层格式(展开段 name 破折号 description)，不是当年的 markdown 链接。
     view = tmp_path / "hubhome" / "views" / "claude" / "MEMORY.md"
     view.parent.mkdir(parents=True)
-    view.write_text("- [m1](<C:/vault/shared/memory/m1.md>)\n", encoding="utf-8")
+    view.write_text("## 工作约束（1）\n- m1 — 一句话说明\n", encoding="utf-8")
 
     data = build_inventory(vault, "box1", None)
     mem = next(a for a in data["assets"] if a["id"] == "memory:m1")
@@ -145,6 +147,47 @@ def test_memory_cells_are_readonly(tmp_path, monkeypatch):
     assert mem["harnesses"]["claude"]["desired"] is True
     assert mem["harnesses"]["codex"]["actual"] is False
     assert mem["harnesses"]["codex"]["desired"] is True
+
+
+def test_view_names_parses_all_three_row_shapes(tmp_path, monkeypatch):
+    """三种行形都要认。
+
+    分层视图里一条记忆可能出现在展开段、折叠段或归档段,而 _view_has_memory 只要漏认
+    一种,那一段的条目就整片报 missing —— 而且是账面全绿式的误报,没人会发现。
+    """
+    monkeypatch.setenv("HUB_HOME", str(tmp_path / "hubhome"))
+    view = tmp_path / "hubhome" / "views" / "claude" / "MEMORY.md"
+    view.parent.mkdir(parents=True)
+    view.write_text(
+        "<!-- shared_hash: v3:abc -->\n"
+        "# 共享记忆索引 — claude\n\n"
+        "## 工作约束（1）\n"
+        "- expanded_one — 说明里也可能出现 — 破折号\n\n"
+        "## 其余（2）\n"
+        "- 改插件/skill 前查(2): folded_a · folded_b\n\n"
+        "## 已归档（1）\n"
+        "- archived_one\n",
+        encoding="utf-8")
+
+    assert _view_names("claude") == {"expanded_one", "folded_a", "folded_b", "archived_one"}
+    # 组名与计数前缀不能被当成名字带进来
+    assert not any(n.startswith("改插件") for n in _view_names("claude"))
+    # 精确匹配:名字互为前缀时不许串
+    assert _view_has_memory("claude", "folded_a")
+    assert not _view_has_memory("claude", "folded")
+
+
+def test_view_hash_state_without_hash_line_is_stale(tmp_path, monkeypatch):
+    """视图存在却没有 shared_hash 行 = 版本不可验证,必须报 stale。
+
+    以前这里 fallback 到 ok,等于把"查不出来"当"没问题"报。
+    """
+    monkeypatch.setenv("HUB_HOME", str(tmp_path / "hubhome"))
+    view = tmp_path / "hubhome" / "views" / "claude" / "MEMORY.md"
+    view.parent.mkdir(parents=True)
+    view.write_text("# 共享记忆索引 — claude\n\n- m1 — 说明\n", encoding="utf-8")
+
+    assert _view_hash_state("claude", "v3:abc") == "stale"
 
 
 

@@ -56,7 +56,7 @@ def prepare_memory_views(vault_root: Path, dev):
     if dev.paths.get("CODEX_HOME"):
         target = _codex_agents_target(dev)
         existing = target.read_text(encoding="utf-8") if target.exists() else ""
-        writes.append((target, upsert_block(existing, render_codex_block(per_tool["codex"]))))
+        writes.append((target, upsert_block(existing, render_codex_block(per_tool["codex"], sh))))
     plan = None
     if dev.paths.get("OPENCODE_CONFIG"):        # 仅设备显式 opt-in 才接 opencode；绝不因默认路径
         plan = plan_instruction(dev, _view_path("opencode"))   # 恰好存在一份带密钥的 opencode.json 就去写它

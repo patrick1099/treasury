@@ -35,3 +35,13 @@ def has_one_valid_block(text: str) -> bool:
     status --check 用它判受管块良构（不能只 `"hub:begin" in text` 就算 ok）。"""
     b, e = _positions(text, BEGIN), _positions(text, END)
     return len(b) == 1 and len(e) == 1 and b[0] < e[0]
+
+def valid_block_body(text: str) -> str | None:
+    """良构受管块的块内正文（含首尾换行），否则 None。status --check 对 Codex 受管块
+    验完良构后还要在块内找 shared_hash——hash 只活在块内,块外用户文本里就算撞见
+    "shared_hash:" 字样也不能当真。"""
+    if not has_one_valid_block(text):
+        return None
+    b = text.find(BEGIN) + len(BEGIN)
+    e = text.find(END)
+    return text[b:e]

@@ -31,6 +31,8 @@ from hub.fslink import LinkError
 from hub.vaultpaths import SharedSkillsEscape
 from hub.hubconfig import read_config, write_config, check_config, ConfigConflict
 from hub.memread import read_memory, MemoryNotInView
+from hub.memory_ops import (explain_memories, audit_memories, EXPLAIN_TOOLS,
+                            render_explain_human, render_audit_human)
 from hub.secrets_cli import (cmd_exec, cmd_render, cmd_run, cmd_unlock,
                              _secrets_error_code)
 from hub.secrets_store import SecretsError
@@ -81,6 +83,8 @@ ai_help_version: 0.1.0
 ## Quick Reference
 
 - **读一条记忆:** `hub memory-read --vault <金库> --host <主机> --tool claude --name <名>`
+- **解释记忆分组:** `hub memory-explain --vault <金库> --host <主机> [--tool claude]`（每条判到哪组、命中的规则、字节数）
+- **列归档候选:** `hub memory-audit --vault <金库> --host <主机>`（只列不改，阈值可调）
 - **读成 JSON:** 追加 `--json`（等价 `--format json` / `--format=json`）
 - **看全部命令:** `hub --help`
 
@@ -88,6 +92,8 @@ ai_help_version: 0.1.0
 
 Use this tool when the user asks to:
 - 读金库里的共享记忆正文（memory-read）
+- 解释某条记忆为什么进/不进某个工具的视图（memory-explain）
+- 巡检金库的归档候选，只列不改（memory-audit）
 - 同步金库到远端 / 生成索引（sync）
 - 把 skill / 记忆提升进共享区（promote / promote-memory）
 - 注册各工具的 skill 链接（register）
@@ -102,6 +108,11 @@ Do NOT use for:
 
 - `memory-read --vault P --host H --tool T --name N`：读一条共享记忆的正文。
   默认人类模式 stdout 只有正文；`--json` 时 stdout 是 `{ok,data,error,meta}` 信封。
+- `memory-explain --vault P --host H [--tool T]`：解释每条共享记忆落在哪一段（展开/折叠/
+  已归档/被 scope 筛掉）、命中哪条规则、在视图里的实际字节数。`--tool` 省略 = 解释全部
+  四个工具；字节数对实际渲染字符串算（len(text.encode("utf-8"))），并解释 scope miss。
+- `memory-audit --vault P --host H [--stale-days 90] [--archived-days 180]`：列三类归档
+  候选（疑似完成 / 久未更新 / 归档已久），只列不改。两个阈值是拍的，请按真实数据调。
 - `status [--check]`：金库 git 状态 + skill/插件链接健康；`--check` 不健康返回 1。
 - `sync [--refresh]`：git 拉取 + lint + 写 MEMORY.md 索引 + 推送；`--refresh` 串联刷新。
 - `collect`：把本机配置的源镜像进金库备份区（有删除需 `--yes` 确认）。
@@ -137,11 +148,17 @@ Do NOT use for:
 - **人类通道（默认）**：保持各命令既有的纯文本输出（过渡期不改）。
 - memory-read --json 的成功 data 含 `name` / `tool` / `host` / `vault` / `body`
   （body 是正文原样，不 trim、不改换行）。
+- memory-explain --json 的 data 含 `host` / `vault` / `tool` / `tools`（每个工具一段：
+  summary 计数 + entries[{name, decision, rule, group, bytes, text}]）。
+- memory-audit --json 的 data 含 `git_available` / `git_clean` 与 candidates
+  {possibly_done, stale, archived_long}，每条候选带名字与理由。
 
 ## Side Effects & Safety
 
 - `sync` / `collect` 会写金库并可能触发 git 提交/推送；`--dry-run` 只报告不落盘。
 - 其余命令只读。共享记忆是唯一备份，删除类操作要确认。
+- memory-explain / memory-audit 只读：一个字节都不写金库（audit 只跑 git log / git status，
+  纯读）。跑完 audit 后 `git -C <金库> status --short` 仍为空。
 - 不联网（除 sync 的 git 远端）。
 - **secrets 泄密边界**：密钥真值只在子进程 env 里。exec 的 json 信封只放 tool /
   exit_code / 遮罩后的 stdout / 截断的 stderr_tail；run 的 json 信封只放 exit_code，
@@ -1034,6 +1051,57 @@ def _cmd_toggle(args) -> int:
 
 
 
+def _cmd_memory_explain(args) -> int:
+    vault = args.vault or read_config().get("vault")
+    host = args.host or read_config().get("host") or current_host()
+    json_mode = getattr(args, "json", False)
+    if not vault:
+        if json_mode:
+            _emit_error("E_NOT_FOUND", "没有 --vault 也没有 ~/.hub/config.toml，无法定位金库",
+                        suggestion="跑 `hub register` 绑定金库，或显式传 --vault <路径>")
+            return 1
+        print("没有 --vault 也没有 ~/.hub/config.toml，无法定位金库"); return 1
+    try:
+        dev = load_device(Path(vault), host)
+        result = explain_memories(Path(vault), dev, args.tool)
+    except (FileNotFoundError, ViewScopeError, SharedMemoryError, FrontmatterError) as e:
+        if json_mode:
+            _emit_error(_error_code(e), str(e), retryable=False)
+            return 1
+        print(e); return 1
+    if json_mode:
+        return 0 if _emit_result(result) else 1
+    print(render_explain_human(result), end="")
+    return 0
+
+
+def _cmd_memory_audit(args) -> int:
+    vault = args.vault or read_config().get("vault")
+    json_mode = getattr(args, "json", False)
+    if not vault:
+        if json_mode:
+            _emit_error("E_NOT_FOUND", "没有 --vault 也没有 ~/.hub/config.toml，无法定位金库",
+                        suggestion="跑 `hub register` 绑定金库，或显式传 --vault <路径>")
+            return 1
+        print("没有 --vault 也没有 ~/.hub/config.toml，无法定位金库"); return 1
+    vault_root = Path(vault)
+    if not vault_root.is_dir():
+        if json_mode:
+            _emit_error("E_NOT_FOUND", f"金库目录不存在: {vault_root}",
+                        suggestion="确认 --vault 指向金库根（含 vault.toml 的目录）")
+            return 1
+        print(f"金库目录不存在: {vault_root}"); return 1
+    try:
+        result = audit_memories(vault_root, args.stale_days, args.archived_days)
+    except (ViewScopeError, SharedMemoryError, FrontmatterError) as e:
+        if json_mode:
+            _emit_error(_error_code(e), str(e), retryable=False)
+            return 1
+        print(e); return 1
+    if json_mode:
+        return 0 if _emit_result(result) else 1
+    print(render_audit_human(result), end="")
+    return 0
 def _write_index(vault_root: Path, vault, w: Writer) -> None:
     w.write_text(vault_root / "MEMORY.md", render_memory_index(vault.memories, vault_root))
 
@@ -1124,6 +1192,23 @@ def build_parser() -> argparse.ArgumentParser:
     mr.add_argument("--tool", required=True, choices=["claude", "codex", "opencode", "dsh"])
     mr.add_argument("--name", required=True)
     mr.set_defaults(func=_cmd_memory_read)
+    me = sub.add_parser("memory-explain")
+    _add_output_flags(me)
+    me.add_argument("--vault", default=None)
+    me.add_argument("--host", default=None)
+    me.add_argument("--tool", default=None, choices=EXPLAIN_TOOLS,
+                    help="解释单个工具；省略时解释全部四个工具（claude/codex/opencode/dsh）")
+    me.set_defaults(func=_cmd_memory_explain)
+
+    ma = sub.add_parser("memory-audit")
+    _add_output_flags(ma)
+    ma.add_argument("--vault", default=None)
+    ma.add_argument("--host", default=None)
+    ma.add_argument("--stale-days", type=int, default=90,
+                    help="久未更新阈值（天）：project 超过即列为候选")
+    ma.add_argument("--archived-days", type=int, default=180,
+                    help="归档已久阈值（天）：archived 超过即提示可清出金库")
+    ma.set_defaults(func=_cmd_memory_audit)
 
     inv = sub.add_parser("inventory",
                          help="输出本机资产×harness 规范化矩阵（JSON 信封）")

@@ -1,3 +1,4 @@
+from datetime import date
 from pathlib import Path
 from hub.model import Memory
 
@@ -162,8 +163,78 @@ def _require_bool(md: dict, key: str, default: bool, path: Path) -> bool:
         f"实际拿到 {type(v).__name__}: {v!r}。"
         f"注意本解析器**不剥行内注释**——`{key}: false  # 说明` 整串都是值。")
 
+def _require_group(md: dict, key: str, path: Path) -> str | None:
+    """`group` 必须是**非空单行字符串**。
+
+    缺省语义是"不参与":键缺失 = None,那是正常的;键**写了但值非法**才是错,必须炸。
+    为什么不静默按缺省处理:group 写错不会自己报错,只会让这条记忆在视图里被分错组、
+    或者干脆不出现——正是 _require_bool 那段注释在讲的同一类事故(字段判错,哪儿都不报)。
+    """
+    if key not in md:
+        return None
+    v = md[key]
+    if not isinstance(v, str):
+        raise FrontmatterError(
+            f"{path}: metadata.{key} 必须是字符串(非空、单行),"
+            f"实际拿到 {type(v).__name__}: {v!r}。")
+    s = v.strip()
+    if not s:
+        raise FrontmatterError(
+            f"{path}: metadata.{key} 不能是空字符串(有 group 键就等于有分组意图),"
+            f"实际拿到 {v!r}。")
+    if "\n" in v or "\r" in v:
+        raise FrontmatterError(
+            f"{path}: metadata.{key} 不能含换行(分组名是单行词),实际拿到 {v!r}。")
+    return s
+
+def _require_archived(md: dict, key: str, path: Path) -> str | None:
+    """`archived` 必须是**严格 YYYY-MM-DD 的真实日期**,有值即归档。
+
+    写错必须炸,绝不静默按活跃处理:`archived: true`、`archived: 2026/08/31`、
+    随手一句话——全都读不出"多久了、什么时候可以清",归档维度的价值就没了。
+    这就是 _require_bool 注释讲的同一类事故:标志位判反了,而且哪儿都不报错。
+    fromisoformat 在 3.11+ 会宽松接受 `20260831` 这种无分隔写法,所以补一道
+    `isoformat() 往返一致` 钉死必须是带 `-` 的规范形式。
+    """
+    if key not in md:
+        return None
+    v = md[key]
+    if not isinstance(v, str):
+        raise FrontmatterError(
+            f"{path}: metadata.{key} 必须是 ISO 日期 YYYY-MM-DD,"
+            f"实际拿到 {type(v).__name__}: {v!r}。")
+    try:
+        parsed = date.fromisoformat(v)
+    except ValueError:
+        raise FrontmatterError(
+            f"{path}: metadata.{key} 必须是严格 YYYY-MM-DD 的真实日期"
+            f"(写成 2026/08/31、写成 true、写成随手一句话都不行),实际拿到 {v!r}。") from None
+    if parsed.isoformat() != v:
+        raise FrontmatterError(
+            f"{path}: metadata.{key} 必须是带 `-` 的规范 YYYY-MM-DD,"
+            f"实际拿到 {v!r}。")
+    return v
+
+def _require_index(md: dict, key: str, path: Path) -> str | None:
+    """`index` 目前只允许一个值:expanded(强制展开到 L0)。其它任何值都炸。
+
+    写成 true、写成别的字符串都是错——键写了但值不在白名单里,视图就该停,不能猜一个
+    默认展开行为(猜 = 渲染结果依赖解析器心情,和 _require_bool 的"bool() 判非空"同源)。
+    """
+    if key not in md:
+        return None
+    v = md[key]
+    if v != "expanded":
+        raise FrontmatterError(
+            f"{path}: metadata.{key} 只能是 expanded(强制展开),"
+            f"实际拿到 {type(v).__name__}: {v!r}。")
+    return v
+
 _KNOWN_TOP = frozenset({"name", "description", "metadata"})
-_KNOWN_META = frozenset({"type", "scope", "portable", "sensitive"})
+# group / archived / index 是阶段 B 的生命周期字段(见 model.Memory)——进 _KNOWN_META 意味着
+# "hub 认它们、它们是 Memory 的正式字段",绝不落进 extra_metadata 搭车(搭车 = 弱类型,
+# 渲染规则哪天要读它们就得从 dict 里抠,和 plan §3.1 否掉的 v1 判断同源)。
+_KNOWN_META = frozenset({"type", "scope", "portable", "sensitive", "group", "archived", "index"})
 
 def load_memory(path: Path) -> Memory:
     try:
@@ -178,6 +249,9 @@ def load_memory(path: Path) -> Memory:
         scope=md.get("scope", ["global"]),
         portable=_require_bool(md, "portable", True, path),
         sensitive=_require_bool(md, "sensitive", False, path),
+        group=_require_group(md, "group", path),
+        archived=_require_archived(md, "archived", path),
+        index=_require_index(md, "index", path),
         body=body,
         path=path,
         # 认不出来的键**不丢**,原样带着(见 model.Memory 的注释)。顺序照源文件里的
@@ -212,7 +286,7 @@ def _fmt_extra(d: dict, indent: str) -> list[str]:
 def dump_memory(m: Memory) -> str:
     """序列化一条记忆。
 
-    已知的 7 个字段占**固定位置、固定写法**;`m.extra` / `m.extra_metadata` 里那些
+    已知的 10 个字段占**固定位置、固定写法**;`m.extra` / `m.extra_metadata` 里那些
     hub 不认识的键**原样搭车**,分别跟在各自那一层的已知键后面(见 model.Memory)。
     顺序沿用源文件里的出现顺序 → dump 是幂等的,不会每次 collect 都抖出无谓的 diff。
     """
@@ -229,6 +303,13 @@ def dump_memory(m: Memory) -> str:
         f"  portable: {str(m.portable).lower()}",
         f"  sensitive: {str(m.sensitive).lower()}",
     ]
+    # 生命周期字段:None = 没写,整行不输出 → 存量 68 个没写这三个键的记忆,dump 结果
+    # 一个字节都不变。dump 只被 collect 这类重写流程调用,视图渲染走 load 不走 dump,
+    # 二者不耦合(plan §3.1 对"留在 extra_metadata 搭车"那条的反驳)。
+    for _key in ("group", "archived", "index"):
+        _v = getattr(m, _key)
+        if _v is not None:
+            lines.append(f"  {_key}: {_v}")
     lines += _fmt_extra(m.extra_metadata, "  ")
     lines.append("---")
     b = m.body
