@@ -1,7 +1,7 @@
 """memory 视图/受管块/opencode 条目的落盘编排。**prepare/validate all → commit writes**：
 先只读预检并渲染全部目标 (path, text)（确定性错误 ViewScopeError/BlockError 在此抛、零副作用），
 再逐个原子写。opencode 的 refuse 归 warnings、不抛不阻断。提交期 I/O 故障才可能部分完成、重跑收敛。
-**一次扫 shared、内存里切三份工具子集**——三种产物绝不各扫各的。
+**一次扫 shared、内存里切四份工具子集**——三种产物绝不各扫各的。
 """
 import os
 from pathlib import Path
@@ -12,7 +12,7 @@ from hub.opencode_cfg import plan_instruction, commit_instruction
 from hub.hubconfig import backups_dir
 from hub.writer import Writer
 
-_TOOLS = ("claude", "codex", "opencode")
+_TOOLS = ("claude", "codex", "opencode", "dsh")
 
 def hub_views_home() -> Path:
     return Path(os.environ.get("HUB_HOME") or (Path.home() / ".hub")) / "views"

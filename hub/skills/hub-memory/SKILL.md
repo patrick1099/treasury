@@ -10,7 +10,7 @@ description / scope；要读某条记忆的**正文**时，用本 skill。
 
 ## 怎么用
 
-对当前工具（claude / codex / opencode）跑：
+对当前工具（claude / codex / opencode / dsh）跑：
 
     py -3 <此skill>/scripts/read_memory.py --tool <当前工具> --name <记忆名>
 

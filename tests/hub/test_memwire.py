@@ -130,7 +130,7 @@ def test_empty_shared_warning_does_not_change_writes_or_raise(tmp_path, monkeypa
     _backup_mem(tmp_path, "box", "a")
     writes, warnings, plan = prepare_memory_views(tmp_path, _dev(tmp_path))
     paths = [p.name for p, _ in writes]
-    assert paths.count("MEMORY.md") == 3 and "CLAUDE.md" in paths and "AGENTS.md" in paths
+    assert paths.count("MEMORY.md") == 4 and "CLAUDE.md" in paths and "AGENTS.md" in paths
 
 def test_opencode_default_path_untouched_without_explicit_optin(tmp_path, monkeypatch):
     # 用户决策：仅设备显式设 OPENCODE_CONFIG 才接 opencode。默认路径 ~/.config/opencode/

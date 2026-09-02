@@ -22,6 +22,8 @@ from hub.register import (register_skills, RegisterConflict,
                           check_link_collisions)
 from hub.opencode_skills import (plan_link_opencode_skills, commit_link_opencode_skills,
                                  opencode_skill_status, stale_skills_paths_hint)
+from hub.dsh_ops import (plan_configure_dsh_loader, commit_configure_dsh_loader,
+                         dsh_loader_status, DshConfigError)
 from hub.promote import (promote_skill, promote_memory, promote_memory_all,
                          PromoteConflict, PromoteMemoryConflict)
 from hub.status_report import link_status, view_health
@@ -33,6 +35,8 @@ from hub.secrets_cli import (cmd_exec, cmd_render, cmd_run, cmd_unlock,
                              _secrets_error_code)
 from hub.secrets_store import SecretsError
 from hub.memview import ViewScopeError, SharedMemoryError
+from hub.inventory import build_inventory
+from hub.toggle_ops import toggle_asset
 from hub.memwire import prepare_memory_views, commit_memory_views
 from hub.textblock import BlockError
 from hub.plugin_ops import (prepare_plugin_register, prepare_plugin_refresh, execute_plugin_plan,
@@ -232,6 +236,8 @@ def _status_json(vault_root: Path, host, check: bool, git_text: str) -> int:
         _emit_error(_error_code(e), str(e), retryable=False)
         return 1
     data["opencode_links"] = [[state, label] for state, label in oc_rows]
+    dsh_rows = dsh_loader_status(vault_root, dev, _hub_root())
+    data["dsh_loader"] = [[state, label] for state, label in dsh_rows]
     if not check:
         return 0 if _emit_result(data) else 1
     data["check"] = True
@@ -241,10 +247,10 @@ def _status_json(vault_root: Path, host, check: bool, git_text: str) -> int:
     try:
         ph = plugin_health(vault_root, dev)
     except (PluginManifestError, PluginIdentityError, PluginContainmentError,
-            PluginRepoUnavailable, CliUnavailable, UnsupportedVaultVersion) as e:
+            PluginRepoUnavailable, CliUnavailable, UnsupportedVaultVersion, DshConfigError) as e:
         _emit_error(_error_code(e), str(e), retryable=False)
         return 1
-    rows_all = rows + oc_rows + vh
+    rows_all = rows + oc_rows + dsh_rows + vh
     bad_rows = [r for r in rows_all if r[0] != "ok"]
     bad_plugin = [h for h in ph if h.state != "ok"]
     health = {"ok": not links and not bad_rows and not bad_plugin,
@@ -301,6 +307,11 @@ def _cmd_status(args) -> int:
         print("opencode skill 链接:")
         for state, label in oc_rows:
             print(f"  [{state}] {label}")
+    dsh_rows = dsh_loader_status(vault_root, dev, _hub_root())
+    if dsh_rows:
+        print("dsh loader:")
+        for state, label in dsh_rows:
+            print(f"  [{state}] {label}")
     links = tracked_gitlinks(vault_root) if check else []
     if links:
         # 插件健康判据读的是**盘上那个嵌套仓**,盘上永远是好的,所以它看不见这个坑。
@@ -315,14 +326,14 @@ def _cmd_status(args) -> int:
         try:
             ph = plugin_health(vault_root, dev)
         except (PluginManifestError, PluginIdentityError, PluginContainmentError,
-                PluginRepoUnavailable, CliUnavailable, UnsupportedVaultVersion) as e:
+                PluginRepoUnavailable, CliUnavailable, UnsupportedVaultVersion, DshConfigError) as e:
             print(f"plugin status 停止: {e}")
             return 1
         if ph:
             print("插件:")
             for h in ph:
                 print(f"  [{h.state}] {h.name}@{h.tool}")
-        return 1 if (links or any(x[0] != "ok" for x in (rows + oc_rows + vh))
+        return 1 if (links or any(x[0] != "ok" for x in (rows + oc_rows + dsh_rows + vh))
                      or any(h.state != "ok" for h in ph)) else 0
     return 0
 
@@ -341,6 +352,7 @@ def _cmd_register(args) -> int:
             hm_links = plan_hub_memory_skill(hub_root, dev)
             check_link_collisions(to_link, hm_links)     # 跨来源同名（如金库也有 hub-memory）→ 零写
             oc_link, oc_ensured = plan_link_opencode_skills(vault_root, dev, hub_root)  # opencode 自己的落点
+            dsh_copies, dsh_writes, dsh_ensured = plan_configure_dsh_loader(vault_root, dev, hub_root)
             check_config(vault_root, host)
             writes, warnings, oc_plan = prepare_memory_views(vault_root, dev)
             plugin_plan = prepare_plugin_register(vault_root, dev)          # 预检并入 prepare
@@ -351,13 +363,14 @@ def _cmd_register(args) -> int:
             commit_register_skills(to_link, w)
             commit_hub_memory_skill(hm_links, w)
             commit_link_opencode_skills(oc_link, w)
+            commit_configure_dsh_loader(dsh_copies, dsh_writes, w)
             write_config(vault_root, host, hub_root, w)
             commit_memory_views(writes, oc_plan, w)
             prep = execute_plugin_plan(plugin_plan, w)                      # 提交期执行 CLI
     except (RegisterConflict, FileNotFoundError, LinkError, SharedSkillsEscape,
             ConfigConflict, ViewScopeError, SharedMemoryError, BlockError,
             PluginManifestError, PluginIdentityError, PluginContainmentError,
-            CliUnavailable, UnsupportedVaultVersion) as e:
+            CliUnavailable, UnsupportedVaultVersion, DshConfigError) as e:
         if json_mode:
             _emit_error(_error_code(e), str(e), retryable=False)
             return 1
@@ -366,6 +379,7 @@ def _cmd_register(args) -> int:
         data = {"dry_run": bool(args.dry_run),
                 "skills_linked": len(ensured),
                 "opencode_links": len(oc_ensured),
+                "dsh_loader": len(dsh_ensured),
                 "plugin": {"succeeded": len(prep.succeeded),
                            "skipped": len(prep.skipped),
                            "failed": len(prep.failed)}}
@@ -383,6 +397,8 @@ def _cmd_register(args) -> int:
     print(f"{verb} {len(ensured)} 个 skill 链接 + hub-memory")
     if oc_ensured:
         print(f"{verb} {len(oc_ensured)} 个 opencode skill 链接（它自己的 skill 目录）")
+    if dsh_ensured:
+        print(f"{verb} {len(dsh_ensured)} 个 dsh loader 配置项")
     for x in warnings:                               # opencode refuse 等：提示不阻断
         print("  ⚠", x)
     if plugin_plan.actions and not args.dry_run:
@@ -965,6 +981,59 @@ def _cmd_memory_read(args) -> int:
     print(body, end="")
     return 0
 
+def _cmd_inventory(args) -> int:
+    # inventory 本身是机器命令：无论是否显式 --json 都输出统一 JSON 信封。
+    try:
+        vault = args.vault or read_config().get("vault")
+        if not vault:
+            _emit_error("E_NOT_FOUND",
+                        "没有 --vault 也没有 ~/.hub/config.toml，无法定位金库",
+                        suggestion="跑 `hub register` 绑定金库，或显式传 --vault <路径>")
+            return 1
+        host = args.host or read_config().get("host") or current_host()
+        data = build_inventory(Path(vault), host, _hub_root())
+        warnings = data.pop("warnings", [])
+    except Exception as e:
+        _emit_error(_error_code(e), str(e), retryable=False)
+        return 1
+    return 0 if _emit_result(data, meta={"warnings": warnings}) else 1
+
+
+
+def _cmd_toggle(args) -> int:
+    try:
+        vault = args.vault or read_config().get("vault")
+        if not vault:
+            _emit_error("E_NOT_FOUND",
+                        "没有 --vault 也没有 ~/.hub/config.toml，无法定位金库",
+                        suggestion="跑 `hub register` 绑定金库，或显式传 --vault <路径>")
+            return 1
+        host = args.host or read_config().get("host") or current_host()
+        data = toggle_asset(
+            Path(vault), host, args.asset_type, args.name, args.harness,
+            args.state == "on", plugin=args.plugin, dry_run=args.dry_run,
+            hub_root=_hub_root())
+        warnings = data.pop("warnings", [])
+    except Exception as e:
+        _emit_error(_error_code(e), str(e), retryable=False)
+        return 1
+
+    if data.get("errors"):
+        succeeded = [r for r in data["results"] if r.get("status") == "applied"]
+        degraded = [r for r in data["results"] if r.get("status") == "degraded"]
+        failed = [r for r in data["results"] if r.get("status") == "failed"] or data["errors"]
+        _emit_error(
+            "E_PARTIAL_FAILURE",
+            f"toggle 完成，但有 {len(failed)} 个平台动作失败",
+            details={"succeeded": succeeded, "degraded": degraded, "failed": failed},
+            retryable=True,
+            suggestion="查看 details.failed 里的原因，修复后重试 `hub toggle ...`")
+        return 1
+
+    return 0 if _emit_result(data, meta={"warnings": warnings}) else 1
+
+
+
 def _write_index(vault_root: Path, vault, w: Writer) -> None:
     w.write_text(vault_root / "MEMORY.md", render_memory_index(vault.memories, vault_root))
 
@@ -1052,9 +1121,33 @@ def build_parser() -> argparse.ArgumentParser:
     _add_output_flags(mr)
     mr.add_argument("--vault", default=None)
     mr.add_argument("--host", default=None)
-    mr.add_argument("--tool", required=True, choices=["claude", "codex", "opencode"])
+    mr.add_argument("--tool", required=True, choices=["claude", "codex", "opencode", "dsh"])
     mr.add_argument("--name", required=True)
     mr.set_defaults(func=_cmd_memory_read)
+
+    inv = sub.add_parser("inventory",
+                         help="输出本机资产×harness 规范化矩阵（JSON 信封）")
+    _add_output_flags(inv)
+    inv.add_argument("--vault", default=None)
+    inv.add_argument("--host", default=None)
+    inv.set_defaults(func=_cmd_inventory)
+
+    tg = sub.add_parser("toggle",
+                        help="统一资产开关：plugin/skill/memory 分平台 on/off")
+    _add_output_flags(tg)
+    tg.add_argument("asset_type", choices=["plugin", "skill", "memory"],
+                    help="资产类型")
+    tg.add_argument("name", help="资产名（skill 可有 --plugin 消歧）")
+    tg.add_argument("harness", choices=["claude", "codex", "opencode", "dsh"],
+                    help="目标平台")
+    tg.add_argument("state", choices=["on", "off"], help="on=启用，off=关闭")
+    tg.add_argument("--plugin", default=None,
+                    help="skill 名撞名/插件内 skill 消歧：指定所属插件")
+    tg.add_argument("--dry-run", action="store_true",
+                    help="只返回计划，不写 device.toml、不建链/删链/改 patch")
+    tg.add_argument("--vault", default=None)
+    tg.add_argument("--host", default=None)
+    tg.set_defaults(func=_cmd_toggle)
 
     # secrets：**不带 parents=[common]**。密钥库在 ~/.claude/secrets/，与金库无关，
     # 不该跟着吃一个 required 的 --vault。

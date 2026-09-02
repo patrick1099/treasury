@@ -323,3 +323,51 @@ def test_hint_silent_when_config_unparsable(tmp_path):
 def test_hint_silent_when_no_config_file(tmp_path):
     vault = tmp_path / "vault"; (vault / "shared").mkdir(parents=True)
     assert stale_skills_paths_hint(_dev(tmp_path), vault) is None
+
+
+# ── unlink 清理：只删 hub 自己的链接 ─────────────────────────────────────────
+def test_unlink_only_removes_owned_link_and_keeps_user_content(tmp_path):
+    from hub.opencode_skills import (plan_unlink_opencode_skills,
+                                     commit_unlink_opencode_skills)
+    vault = tmp_path / "vault"
+    alpha = _shared_skill(vault, "alpha")
+    dev = _dev(tmp_path)
+    _do(vault, dev)
+
+    # 把 alpha 关闭：链接仍在，但不再期望 -> 成为待清理项
+    dev.skills = {"opencode": []}
+    root = _oc_skill_dir(tmp_path)
+    mine = root / "my-own"
+    mine.mkdir()
+    (mine / "SKILL.md").write_text("""# 我自己的
+""", encoding="utf-8")
+    outside = tmp_path / "outside"; outside.mkdir()
+    make_dir_link(outside, root / "foreign")
+
+    to_unlink = plan_unlink_opencode_skills(vault, dev)
+    assert root / "alpha" in to_unlink
+    assert root / "my-own" not in to_unlink
+    assert root / "foreign" not in to_unlink
+
+    w = Writer()
+    commit_unlink_opencode_skills(to_unlink, w, vault)
+    assert not os.path.lexists(root / "alpha")
+    assert w.removed == [root / "alpha"]
+    assert (mine / "SKILL.md").exists()
+    assert os.path.lexists(root / "foreign")
+
+
+def test_commit_unlink_defense_keeps_foreign_link_even_if_passed(tmp_path):
+    from hub.opencode_skills import (plan_unlink_opencode_skills,
+                                     commit_unlink_opencode_skills)
+    vault = tmp_path / "vault"
+    _shared_skill(vault, "alpha")
+    root = _oc_skill_dir(tmp_path)
+    root.mkdir(parents=True)
+    outside = tmp_path / "outside"; outside.mkdir()
+    make_dir_link(outside, root / "foreign")
+    dev = _dev(tmp_path)
+    w = Writer()
+    commit_unlink_opencode_skills([root / "foreign"], w, vault)
+    assert w.removed == []
+    assert os.path.lexists(root / "foreign")

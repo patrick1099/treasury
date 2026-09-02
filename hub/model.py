@@ -50,6 +50,7 @@ class DeviceProfile:
     paths: dict[str, str]
     sources: dict[str, ToolSources] = field(default_factory=dict)   # "claude" / "codex"
     plugins: dict = field(default_factory=dict)      # 新增：{tool: [enabled plugin names]}
+    skills: dict = field(default_factory=dict)      # 新增：{tool: [enabled skill names]}，缺省=全部开启
 
 @dataclass
 class VaultConfig:

@@ -61,7 +61,7 @@ def view_health(vault_root: Path, dev: DeviceProfile, hub_root: Path) -> list[tu
             rows.append(("ok" if resolves_to(link, hm_src) else "conflict", str(link)))
     # ③ 三份视图 + 新鲜度（视图头嵌的 shared_hash 与当前 shared 比对）
     cur = shared_hash(load_shared_memories(vault_root))
-    for tool in ("claude", "codex", "opencode"):
+    for tool in ("claude", "codex", "opencode", "dsh"):
         v = _view_path(tool)
         if not v.exists():
             rows.append(("missing", str(v))); continue

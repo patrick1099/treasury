@@ -106,6 +106,14 @@ def _hub_memory_source(hub_root: Path | None) -> list[tuple[str, Path]]:
         raise FileNotFoundError(f"hub 包里没有 hub-memory skill: {src}")
     return [("hub-memory", src)]
 
+def _skill_desired(dev: DeviceProfile, name: str) -> bool:
+    """[skills.opencode].enabled 缺省=全部开启；出现 key 后即为权威名单。"""
+    enabled = dev.skills.get("opencode")
+    if enabled is None:
+        return True
+    return name in enabled
+
+
 def collect_opencode_sources(vault_root: Path, dev: DeviceProfile,
                              hub_root: Path | None = None) -> list[tuple[str, Path]]:
     """三批源合并，并做**跨来源重名**预检。
@@ -116,6 +124,9 @@ def collect_opencode_sources(vault_root: Path, dev: DeviceProfile,
     """
     pairs = (_standalone_sources(vault_root) + _plugin_sources(vault_root, dev)
              + _hub_memory_source(hub_root))
+    # [skills.opencode].enabled 是本机单 skill 期望名单；缺省全开。被关掉的
+    # skill 不再进入“期望链”，现有链会由 plan_unlink_opencode_skills 按归属清理。
+    pairs = [(n, src) for n, src in pairs if _skill_desired(dev, n)]
     seen: dict[str, Path] = {}
     dupes: list[str] = []
     for name, src in pairs:
@@ -228,6 +239,54 @@ def _orphan_rows(target_dir: Path, expected: set[str], vault_root, hub_root) -> 
         if any(t == o or t.startswith(o + os.sep) for o in owned):
             rows.append(("orphan", str(entry)))
     return rows
+
+def _owned_link(entry: Path, vault_root, hub_root) -> bool:
+    """归属判据：一条链接的目标指回金库或 hub 包才算 hub 可清理。"""
+    tgt = _link_target(entry)
+    if tgt is None:
+        return False
+    roots = [Path(vault_root)] + ([Path(hub_root)] if hub_root else [])
+    owned = [_norm(str(p)) for p in roots]
+    t = _norm(tgt)
+    return any(t == o or t.startswith(o + os.sep) for o in owned)
+
+
+def plan_unlink_opencode_skills(vault_root: Path, dev: DeviceProfile,
+                                hub_root: Path | None = None) -> list[Path]:
+    """只读预检：返回“不再期望”且归属明确的 opencode 链接（待删）。
+
+    与 plan_link_opencode_skills 相反：它只清理 hub 确实建过、现在不再期望的链接。
+    用户自建真目录、指向金库/hub 包之外的外链一律不动。
+    """
+    target_dir = opencode_skill_dir(dev)
+    if target_dir is None:
+        return []
+    try:
+        expected = {n for n, _ in collect_opencode_sources(vault_root, dev, hub_root)}
+    except (RegisterConflict, PluginContainmentError, FileNotFoundError):
+        # 来源集合都无法确定时，宁可不删；避免把用户内容误判为残留。
+        return []
+    if not os.path.lexists(target_dir) or not target_dir.is_dir():
+        return []
+    to_unlink: list[Path] = []
+    for entry in sorted(target_dir.iterdir(), key=lambda p: p.name):
+        if entry.name in expected:
+            continue
+        if _owned_link(entry, vault_root, hub_root):
+            to_unlink.append(entry)
+    return to_unlink
+
+
+def commit_unlink_opencode_skills(to_unlink, w: Writer,
+                                  vault_root: Path | None = None,
+                                  hub_root: Path | None = None) -> None:
+    """提交删除。传入 vault_root/hub_root 时再次按归属过滤，绝不误删用户内容。"""
+    for link in to_unlink:
+        link = Path(link)
+        if vault_root is not None and not _owned_link(link, vault_root, hub_root):
+            continue
+        w.remove_dir_link(link)
+
 
 def stale_skills_paths_hint(dev: DeviceProfile, vault_root: Path) -> str | None:
     """接完原生落点后，opencode.json 里那行手加的 `skills.paths` 就多余了——它指着金库，
