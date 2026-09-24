@@ -176,7 +176,7 @@ def test_file_inside_legit_dir_that_resolves_into_secrets_is_denied(tmp_path):
     try:
         subprocess.run(
             ["cmd", "/c", "mklink", "/J", str(link), str(secrets_dir)],
-            check=True, capture_output=True, text=True)
+            check=True, capture_output=True, text=True, errors="replace")
     except (OSError, subprocess.CalledProcessError) as e:
         pytest.skip(f"无法在本机创建 NTFS junction: {e}")
 

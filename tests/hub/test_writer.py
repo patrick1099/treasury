@@ -161,7 +161,7 @@ def test_copy_tree_does_not_leak_through_symlink_to_secrets(tmp_path):
     if not os_symlink_ok:
         result = subprocess.run(
             ["cmd", "/c", "mklink", "/J", str(link), str(real_secrets)],
-            capture_output=True, text=True,
+            capture_output=True, text=True, errors="replace",
         )
         if result.returncode != 0 or not link.exists():
             pytest.skip(
