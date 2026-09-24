@@ -8,14 +8,15 @@ opencode 没有插件安装通道（它拿插件 skill 是靠 opencode_skills �
 import json
 import pytest
 from hub.plugin_ops import (prepare_plugin_register, prepare_plugin_refresh,
-                            plugin_health, _cli_platforms, CLI_PLATFORMS)
+                            plugin_health, _cli_platforms)
+from hub import platforms
 from hub.plugin_manifest import PluginEntry
 from tests.hub.test_plugin_register import _setup, make_runner, _ids
 
 def test_cli_platforms_filters_opencode_out():
     e = PluginEntry("p", ["claude", "codex", "opencode"], None, None)
     assert _cli_platforms(e) == ["claude", "codex"]
-    assert "opencode" not in CLI_PLATFORMS
+    assert platforms.load("opencode").plugin_channel != "cli"
 
 def test_register_plan_identical_with_and_without_opencode_in_manifest(tmp_path, tmp_path_factory):
     """加了 opencode 之后，claude/codex 的动作清单必须**一个字不差**。"""

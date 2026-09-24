@@ -21,11 +21,11 @@ from hub.memview import (load_shared_memories, validate_scopes, classify_entries
                          _view_entry, expanded_entry_text)
 from hub.model import DeviceProfile
 from hub.scope import scope_matches
+from hub.platforms import all_names, enabled_names, check_enabled
 
-# memory-explain 省略 --tool 时的语义写死为「解释全部四个工具」，不是猜当前工具（plan §4
-# 硬要求 3）。dsh 不在 scope.py 的 tool 白名单里（parse_scope 只认 claude/codex/opencode），
-# 所以 scope 里永远写不出 tool:dsh；对 dsh 解释时任何 tool: 谓词都判不匹配，这正是期望行为。
-EXPLAIN_TOOLS = ("claude", "codex", "opencode", "dsh")
+# memory-explain 省略 --tool 时解释「本机启用的全部平台」，不是猜当前工具（plan §4 硬要求 3）。
+# --tool 的可选值是注册表全集；点名一个本机停用的平台会明确报错（见 explain_memories）。
+EXPLAIN_TOOLS = all_names()
 
 # 完成态词（plan §3.5）：project 的 description 命中任一个即算「疑似完成」候选。
 _DONE_WORDS = ("shipped", "已完成", "已落地", "全部", "已闭环")
@@ -109,10 +109,12 @@ def _explain_tool(mems, parsed, vault_root: Path, dev: DeviceProfile, tool: str)
 
 
 def explain_memories(vault_root: Path, dev: DeviceProfile, tool: str | None) -> dict:
-    """--tool 给了就解释那一个；没给就解释全部四个（plan §4 硬要求 3）。"""
+    """--tool 给了就解释那一个（必须是本机启用的）；没给就解释本机启用的全部平台（plan §4 硬要求 3）。"""
     mems = load_shared_memories(vault_root)
     parsed = validate_scopes(mems)
-    tools = (tool,) if tool else EXPLAIN_TOOLS
+    if tool:
+        check_enabled(dev, tool)                # 点名停用的平台 → 明确报错
+    tools = (tool,) if tool else enabled_names(dev)
     return {"host": dev.host, "vault": str(vault_root), "tool": tool,
             "tools": [_explain_tool(mems, parsed, vault_root, dev, t) for t in tools]}
 

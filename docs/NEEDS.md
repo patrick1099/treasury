@@ -76,6 +76,29 @@ C 用什么机制把东西装回工具，候选：
 - **平台专属 hook 跨平台分发**（compact-plus 那种 PreCompact/SessionStart）—— 平台能力墙，
   opencode/Codex 没这事件，**做不了**
 - 多机 NAS sync 真验、`scope` 打标（49 条全 `global`）、Codex 自有插件收集 —— 都靠后
+- ~~**待办：opencode / dsh 停用收口**~~ —— **2026-09-24 已做**，经过见 `docs/CHANGELOG.md` 同日条目。
+  和当初列的四步有两处不同：① 没做 `tools` 白名单补丁，而是把平台收成注册表（`hub/platforms/`），
+  开关键叫 `platforms`；② `device.toml` 里 opencode / dsh 的路径和插件名单**留着没删**——停用后
+  hub 不读它们，留着是为了想恢复时只改一行。③ 两份旧视图已删、④ 两条记忆已归档。
+- **待办：平台注册表收尾遗留**（2026-09-24 做注册表时发现，当时没动，免得扩大范围）
+  - ① `hub_gui/`（未进 git 的 GUI 草稿）`web/app.js` 写死 `HARNESSES = ['claude','codex','opencode','dsh']`；
+    本机停用两个平台后那两列会是空的。改成读 `hub inventory --json` 顶层的 `harnesses`。
+  - ② 金库根的 `SCHEMA.md` 和 `hub/schema_md.py` 早已不一致（这次之前就是），只有 scaffold 会重写它；
+    要么给 `sync`/`refresh` 加一步重写，要么在 `status --check` 里报出不一致。
+  - ③ claude / codex 的插件 CLI 方言还没搬进适配器：`hub/plugin_ops.py`、`hub/plugin_cli.py` 按
+    `cli_dialect` 分支（未知方言会明确报错，不会落进默认分支）。等真要加第三个走 CLI 的平台时再搬。
+  - ④ 另一条没收口的轴——**备份区按工具分目录**（`<本机>/claude/`、`<本机>/codex/`）：`collect/__init__.py`、
+    `collect/decl.py`、`promote.py`、`promote --tool` 的 choices、`plugin_migrate.py` 都写死 claude/codex。
+    它和平台注册表不是同一件事（备份区是"从哪收"，注册表是"装回哪"），要不要收、收成什么样先想清楚。
+  - ⑤ dsh 的 loader 源码不在 hub 包里（`dsh-claude-plugin-loader/dsh-claude-plugin-loader.mjs` 缺失）。
+    现在 dsh 已停用所以不报错；以后要恢复 dsh，得先把源码找回来放进仓库。
+  - ⑥ 回写 vibe-flow（在插件仓 `treasury-vault/shared/plugins/vibe-flow`，不在本仓）：这次 codex 评审
+    挑出的三条通用教训，§5「低耦合底线」里还没写——
+    停用一个成员 ≠ 这个成员的东西不要了（要在规划前滤掉，不能变成卸载/删除动作）；
+    写命令要把各成员的计划集中汇总、互查撞车后再统一落盘，不能逐个成员 plan→commit；
+    惰性加载要贯穿调用链（入口不许顶层 import 成员实现），否则停用的成员照样被加载。
+  - ⑦ 本机 Codex CLI 是 0.146.0，太旧，调不动新模型，`ai-room ask --to codex` 派不出去，这次评审靠用户手工转发。
+    要升级得用户自己动手（`npm i -g @openai/codex` 之类）。
 
 ---
 

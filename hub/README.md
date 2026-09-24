@@ -80,6 +80,12 @@ py -3 -m hub.cli sync     --vault D:/hub-vault
 
 所有命令都吃 `--vault <金库>`,可选 `--host <设备名>`(省略 = 本机 hostname 小写)。
 
+**只管本机启用的平台。** hub 认识 claude / codex / opencode / dsh 四个平台;每台设备在
+`device.toml` 顶层写 `platforms = [...]` 决定启用哪些(不写 = 全部)。下表里"各工具""三家"
+一律指本机启用的那几个;停用的平台 hub 不出视图、不建链、不装插件、不做检查。启用的平台
+在本机用不了(比如缺依赖)时,`status` 把它报成 `unavailable`、其余照常检查;`register` /
+`refresh` 则报出原因、一个字节都不写、返回非零。格式细节见 `SCHEMA.md` §3。
+
 | 命令 | 作用 | 联网 |
 |---|---|---|
 | `collect` | 读本机的源,填 `<本机>/` 备份区,重算 `MEMORY.md` | 否 |
@@ -137,14 +143,15 @@ skill 判断)。A 阶段的 `collect` / `sync` **不在此列**:它们只碰 `<�
 | `fslink.py` | (C)目录链接原语 junction/symlink + `is_under`;`remove_dir_link` 只删链接点、绝不误删真目录 |
 | `promote.py` | (C)备份区选定 skill → `shared/`:复制、路径边界封死、同名冲突即停 |
 | `register.py` | (C)`shared/skills/` 逐个活链进各工具 skill 目录:非破坏、写前完整只读预检、冲突零写入 |
-| `status_report.py` | (C)只读报告各工具 skill 链接健康(`ok` / `missing` / `conflict`) |
+| `status_report.py` | (C)只读报告各工具 skill 链接健康(`ok` / `missing` / `conflict` / `unavailable`) |
+| `platforms/` | **平台注册表**(`__init__.py`:hub 认识哪些平台、本机启用哪些)+ 每平台一个适配器(`claude.py` / `codex.py` / `opencode.py` / `dsh.py`)。平台之间的差别只写在适配器里,调用方不按平台名分支。**加一个平台 = 注册表加一行 + 写一个适配器** |
 | `vaultpaths.py` | (C)`shared/skills` 容器边界断言:防经链接逃出金库,promote/register/status 三处共用 |
 | `memview.py` | (C)memory 下行视图核心:`shared/memory` 只扫一次、全量 scope 预检,内存里按(设备,工具)切子集,喂给渲染器 |
 | `textblock.py` | (C)通用受管块编辑 `<!-- hub:begin -->…<!-- hub:end -->`:无标记追加、一对合法只换块内、格式非法零写入 |
 | `opencode_cfg.py` | (C)`opencode.json` 的 `instructions[]` 写入:plan(只读预检)/commit(写)两段,严格 JSON 才改,解析失败一律 refuse 降 warning、不覆盖 |
 | `hubconfig.py` | (C)本机指针 `~/.hub/config.toml`(vault/host/hub_root)+ `~/.hub/backups`;`register` 写、`memory-read` 缺 `--vault` 时读 |
 | `memread.py` | (C)`memory-read` 核心:只在本机该 tool 视图里查名(拒读越 scope)、读正文、内存展开符号根,不写第二份 |
-| `memwire.py` | (C)memory 视图/受管块/opencode 条目的落盘编排:prepare(只读预检+渲染全部目标)→ commit(逐个原子写) |
+| `memwire.py` | (C)memory 视图的落盘编排:prepare(只读预检+渲染全部目标)→ commit(逐个原子写);视图接进各平台入口文件(受管块、opencode 条目)归平台适配器 |
 | `migrate.py` | (C)`vault.toml` schema 版本迁移,当前只支持 v1→v2:只从 version 1 升、且要求全部记忆已是 `[global]` |
 | `frontmatter.py` | 记忆 frontmatter 的受控 YAML 子集(认不出来的键**原样带着走**) |
 | `snapshot.py` | `git archive HEAD` → 干净的目录树快照 |

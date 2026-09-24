@@ -22,11 +22,16 @@ from pathlib import Path
 from hub.model import DeviceProfile
 from hub.writer import Writer
 from hub.plugin_manifest import load_plugin_manifest
+from hub.platforms import PlatformUnavailable
 
 DEFAULT_DSH_PROFILE = "headless"
 
 class DshConfigError(RuntimeError):
     pass
+
+
+class DshLoaderMissing(DshConfigError, PlatformUnavailable):
+    """hub 包里缺 loader 源码：dsh 在这台机器上用不了（不可用），不是用户配置冲突。"""
 
 
 def dsh_home(dev: DeviceProfile) -> Path | None:
@@ -272,7 +277,7 @@ def plan_configure_dsh_loader(vault_root: Path, dev: DeviceProfile, hub_root: Pa
         return [], [], []
     src = loader_source(hub_root)
     if not src.is_file():
-        raise DshConfigError(f"hub 包缺 dsh loader 源码：{src}")
+        raise DshLoaderMissing(f"hub 包缺 dsh loader 源码：{src}")
     dest = loader_dest(dev)
     patch = patch_path(dev)
     assert dest is not None and patch is not None
@@ -322,13 +327,17 @@ def commit_configure_dsh_loader(copies, writes, w: Writer) -> None:
 
 def dsh_loader_status(vault_root: Path, dev: DeviceProfile,
                       hub_root: Path) -> list[tuple[str, str]]:
-    """只读健康检查。dsh 未安装/未配置 → 空表。状态 ∈ {ok, missing, conflict}。"""
+    """只读健康检查。dsh 未安装/未配置 → 空表。状态 ∈ {ok, missing, conflict, unavailable}。
+
+    缺 loader 源码报 unavailable（dsh 在这台机器上用不了），和「patch 指向别的金库」那种
+    conflict 分开：前者是平台不可用，后者是用户的配置冲突。
+    """
     prof = dsh_profile_dir(dev)
     if prof is None:
         return []
     src = loader_source(hub_root)
     if not src.is_file():
-        return [("conflict", f"{src}（hub 包缺 dsh loader 源码）")]
+        return [("unavailable", f"{src}（hub 包缺 dsh loader 源码）")]
     dest = loader_dest(dev)
     patch = patch_path(dev)
     assert dest is not None and patch is not None

@@ -60,6 +60,8 @@ class DeviceProfile:
     sources: dict[str, ToolSources] = field(default_factory=dict)   # "claude" / "codex"
     plugins: dict = field(default_factory=dict)      # 新增：{tool: [enabled plugin names]}
     skills: dict = field(default_factory=dict)      # 新增：{tool: [enabled skill names]}，缺省=全部开启
+    # 本机启用的平台（device.toml 顶层 platforms）。None = 没写 = 注册表全部；解释与校验在 hub.platforms。
+    platforms: list | None = None
 
 @dataclass
 class VaultConfig:

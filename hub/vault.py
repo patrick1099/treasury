@@ -68,8 +68,9 @@ def _tool_sources(raw: dict) -> ToolSources:
     )
 
 def load_device(root: Path, host: str) -> DeviceProfile:
+    from hub.platforms import enabled_names
     raw = tomllib.loads((root / host / "device.toml").read_text(encoding="utf-8"))
-    return DeviceProfile(
+    dev = DeviceProfile(
         host=host,
         classes=list(raw.get("class", [])),
         projects=list(raw.get("projects", [])),
@@ -79,7 +80,10 @@ def load_device(root: Path, host: str) -> DeviceProfile:
                  for t, v in (raw.get("plugins") or {}).items()},   # 新增
         skills={t: list((v or {}).get("enabled", []))
                 for t, v in (raw.get("skills") or {}).items()},
+        platforms=raw.get("platforms"),
     )
+    enabled_names(dev)          # platforms 写错（类型/未注册的名字）在这里就报，不拖到用的时候
+    return dev
 
 class UnsupportedVaultVersion(RuntimeError):
     pass
