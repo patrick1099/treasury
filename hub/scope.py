@@ -6,16 +6,17 @@ v3 起 register/refresh 就是 hub 的 CLI 命令，C 就是 Python，匹配器�
 - 校验：`hub sync` 前 lint、`promote`/视图生成前预检，非法即停。
 - 匹配：视图生成按 (本机 class/projects, 目标 tool) 判一条记忆进不进该视图。
 
-语法：global / class:<名> / project:<名> / tool:<claude|codex|opencode|dsh>。
+语法：global / class:<名> / project:<名> / tool:<平台名>（平台名以 hub.platforms 注册表为准）。
 语义：global/class/project 同属"设备订阅"维度内 OR；tool 独立维度内 OR；
 两维之间 AND；某维度无标签=该维度匹配全部；global 必须独占。
 """
+
+from hub.platforms import all_names
 
 class ScopeError(ValueError):
     pass
 
 _DIMS = {"class", "project", "tool"}
-_TOOLS = {"claude", "codex", "opencode", "dsh"}
 
 def parse_scope(scope: list[str]) -> dict[str, set[str]]:
     if not scope:
@@ -28,8 +29,9 @@ def parse_scope(scope: list[str]) -> dict[str, set[str]]:
         dim, sep, val = token.partition(":")
         if not sep or dim not in _DIMS or not val:
             raise ScopeError(f"非法 scope 谓词: {token!r}（合法维度: class/project/tool）")
-        if dim == "tool" and val not in _TOOLS:
-            raise ScopeError(f"未知 tool: {val!r}（合法: claude/codex/opencode/dsh）")
+        if dim == "tool" and val not in all_names():
+            # 用注册表**全集**而不是本机启用集：别的机器写的 tool:opencode 在停用它的机器上也得过 lint
+            raise ScopeError(f"未知 tool: {val!r}（合法: {'/'.join(all_names())}）")
         dims.setdefault(dim, set()).add(val)
     if has_global and dims:
         raise ScopeError("global 必须单独出现，不可与维度谓词混用")

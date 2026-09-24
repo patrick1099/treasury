@@ -117,7 +117,13 @@ def test_standalone_skill_and_dsh_unmanaged(tmp_path, monkeypatch):
     _patch_cli(monkeypatch)
     monkeypatch.setenv("HUB_HOME", str(tmp_path / "hubhome"))
 
-    data = build_inventory(vault, "box1", None)
+    # dsh 要可用才谈得上 unmanaged：给一份带 loader 源码的 hub 根（缺源码时 dsh 整列是 unknown，
+    # 见 test_platforms.py 的不可用用例）
+    hub_root = tmp_path / "hubroot"
+    loader = hub_root / "dsh-claude-plugin-loader" / "dsh-claude-plugin-loader.mjs"
+    loader.parent.mkdir(parents=True)
+    loader.write_text("export const name = 'x'\n", encoding="utf-8")
+    data = build_inventory(vault, "box1", hub_root)
     skill = next(a for a in data["assets"] if a["id"] == "skill:standalone:alpha")
     assert skill["skill_origin"] == "standalone"
     assert skill["harnesses"]["dsh"]["control"] == "unmanaged"

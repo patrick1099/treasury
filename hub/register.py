@@ -16,17 +16,19 @@ from hub.vaultpaths import shared_skills_dir, within_shared_skills, SharedSkills
 class RegisterConflict(RuntimeError):
     pass
 
-def _agents_home(dev: DeviceProfile) -> Path:
-    v = dev.paths.get("AGENTS_HOME")
-    return Path(v) if v else Path.home() / ".agents"
-
 def skill_targets(dev: DeviceProfile) -> list[Path]:
-    """本机要建 skill 链接的 skills 目录集合。缺失的 home 跳过。"""
+    """本机要建 skill 链接的 skills 目录集合：每个启用平台问它的 skills_home，没有的跳过。
+
+    平台加载失败的这里跳过不报——汇总不可用、决定零写入是编排方（register/status）的事。
+    """
+    from hub import platforms
     out: list[Path] = []
-    ch = dev.paths.get("CLAUDE_HOME")
-    if ch:
-        out.append(Path(ch) / "skills")          # Claude 读这里
-    out.append(_agents_home(dev) / "skills")     # Codex + opencode 读这里
+    for x in platforms.enabled(dev):
+        if x.adapter is None:
+            continue
+        home = x.adapter.skills_home(dev)
+        if home is not None and home not in out:
+            out.append(home)
     return out
 
 def plan_register_skills(vault_root: Path, dev: DeviceProfile):
@@ -115,3 +117,16 @@ def check_link_collisions(*link_lists) -> None:
                 raise RegisterConflict(
                     f"链接路径 {link} 被两个不同来源同时占用（{seen[key]} vs {src}），register 拒绝、零写入。")
             seen[key] = src
+
+
+def check_write_collisions(*write_lists) -> None:
+    """跨平台的写入目标唯一性预检：同一个文件被两份计划写成不同内容 → RegisterConflict，零写入。
+    各平台各自预检都通过、提交时才互相覆盖的那种半套，要在这里拦下。"""
+    seen: dict[str, str] = {}
+    for writes in write_lists:
+        for path, text in writes:
+            key = os.path.normcase(os.path.abspath(str(path)))
+            if key in seen and seen[key] != text:
+                raise RegisterConflict(
+                    f"{path} 被两份计划写成不同内容，register 拒绝、零写入。")
+            seen[key] = text

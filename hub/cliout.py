@@ -23,6 +23,7 @@ from hub.vault import UnsupportedVaultVersion
 from hub.plugin_migrate import MigrationInputError
 from hub.induction import InductionError
 from hub.secrets_cli import SecretsError, _secrets_error_code
+from hub.platforms import PlatformUnavailable
 
 def _envelope(ok: bool, data=None, error=None, meta=None) -> dict:
     return {"ok": ok, "data": data, "error": error, "meta": meta or {}}
@@ -102,7 +103,7 @@ def _error_code(exc: Exception) -> str:
         return "E_VALIDATION"
     if isinstance(exc, (RemoteUnavailable, PluginRepoUnavailable)):
         return "E_NETWORK"
-    if isinstance(exc, UnsupportedVaultVersion):
+    if isinstance(exc, (UnsupportedVaultVersion, PlatformUnavailable)):
         return "E_PLATFORM"
     if isinstance(exc, CliUnavailable):
         return "E_EXTERNAL_TOOL"

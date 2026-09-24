@@ -19,14 +19,12 @@ from hub.writer import Writer
 from hub.register import (register_skills, RegisterConflict,
                           plan_register_skills, commit_register_skills,
                           plan_hub_memory_skill, commit_hub_memory_skill,
-                          check_link_collisions)
-from hub.opencode_skills import (plan_link_opencode_skills, commit_link_opencode_skills,
-                                 opencode_skill_status, stale_skills_paths_hint)
-from hub.dsh_ops import (plan_configure_dsh_loader, commit_configure_dsh_loader,
-                         dsh_loader_status, DshConfigError)
+                          check_link_collisions, check_write_collisions)
+from hub import platforms
+from hub.platforms import PlatformConfigError, PlatformDisabled, PlatformUnavailable
 from hub.promote import (promote_skill, promote_memory, promote_memory_all,
                          PromoteConflict, PromoteMemoryConflict)
-from hub.status_report import link_status, view_health
+from hub.status_report import link_status, view_health, platform_status
 from hub.fslink import LinkError
 from hub.vaultpaths import SharedSkillsEscape
 from hub.hubconfig import read_config, write_config, check_config, ConfigConflict
@@ -231,8 +229,13 @@ def _lint(vault, exempt: set[str]) -> list[str]:
             errs.append(f"{m.name}: sensitive:true 记忆不应进入金库")
     return errs
 
+def _platform_keys(dev) -> list[str]:
+    """status --json 里各启用平台附加行的键（opencode_links / dsh_loader ……），加载失败的跳过。"""
+    return [x.adapter.status_key for x in platforms.enabled(dev)
+            if x.adapter is not None and x.adapter.status_key]
+
 def _status_json(vault_root: Path, host, check: bool, git_text: str) -> int:
-    data = {"git": git_text, "skill_links": [], "opencode_links": [], "gitlinks": []}
+    data = {"git": git_text, "skill_links": [], "gitlinks": []}
     try:
         dev = load_device(vault_root, host or current_host())
     except FileNotFoundError:
@@ -240,6 +243,7 @@ def _status_json(vault_root: Path, host, check: bool, git_text: str) -> int:
             _emit_error("E_NOT_FOUND", "status --check 停止：本机没有 device.toml",
                         suggestion="先跑 `hub register` 绑定金库，或显式传 --host <主机>")
             return 1
+        data.update({k: [] for k in _platform_keys(None)})
         return 0 if _emit_result(data) else 1
     try:
         rows = link_status(vault_root, dev)
@@ -248,13 +252,17 @@ def _status_json(vault_root: Path, host, check: bool, git_text: str) -> int:
         return 1
     data["skill_links"] = [[state, label] for state, label in rows]
     try:
-        oc_rows = opencode_skill_status(vault_root, dev, _hub_root())
+        prows = platform_status(vault_root, dev, _hub_root())
     except (PluginManifestError, PluginIdentityError, PluginContainmentError) as e:
         _emit_error(_error_code(e), str(e), retryable=False)
         return 1
-    data["opencode_links"] = [[state, label] for state, label in oc_rows]
-    dsh_rows = dsh_loader_status(vault_root, dev, _hub_root())
-    data["dsh_loader"] = [[state, label] for state, label in dsh_rows]
+    extra_rows = []
+    for pr in prows:
+        extra_rows += pr.rows
+        if pr.key:
+            data[pr.key] = [[state, label] for state, label in pr.rows]
+        else:
+            data.setdefault("platform_errors", []).extend([[s, l] for s, l in pr.rows])
     if not check:
         return 0 if _emit_result(data) else 1
     data["check"] = True
@@ -264,10 +272,11 @@ def _status_json(vault_root: Path, host, check: bool, git_text: str) -> int:
     try:
         ph = plugin_health(vault_root, dev)
     except (PluginManifestError, PluginIdentityError, PluginContainmentError,
-            PluginRepoUnavailable, CliUnavailable, UnsupportedVaultVersion, DshConfigError) as e:
+            PluginRepoUnavailable, CliUnavailable, UnsupportedVaultVersion,
+            PlatformUnavailable) as e:
         _emit_error(_error_code(e), str(e), retryable=False)
         return 1
-    rows_all = rows + oc_rows + dsh_rows + vh
+    rows_all = rows + extra_rows + vh
     bad_rows = [r for r in rows_all if r[0] != "ok"]
     bad_plugin = [h for h in ph if h.state != "ok"]
     health = {"ok": not links and not bad_rows and not bad_plugin,
@@ -316,19 +325,17 @@ def _cmd_status(args) -> int:
         for state, label in rows:
             print(f"  [{state}] {label}")
     try:
-        oc_rows = opencode_skill_status(vault_root, dev, _hub_root())
+        prows = platform_status(vault_root, dev, _hub_root())
     except (PluginManifestError, PluginIdentityError, PluginContainmentError) as e:
         print(e)
         return 1
-    if oc_rows:
-        print("opencode skill 链接:")
-        for state, label in oc_rows:
-            print(f"  [{state}] {label}")
-    dsh_rows = dsh_loader_status(vault_root, dev, _hub_root())
-    if dsh_rows:
-        print("dsh loader:")
-        for state, label in dsh_rows:
-            print(f"  [{state}] {label}")
+    extra_rows = []
+    for pr in prows:
+        extra_rows += pr.rows
+        if pr.rows:
+            print(f"{pr.title}:")
+            for state, label in pr.rows:
+                print(f"  [{state}] {label}")
     links = tracked_gitlinks(vault_root) if check else []
     if links:
         # 插件健康判据读的是**盘上那个嵌套仓**,盘上永远是好的,所以它看不见这个坑。
@@ -343,14 +350,15 @@ def _cmd_status(args) -> int:
         try:
             ph = plugin_health(vault_root, dev)
         except (PluginManifestError, PluginIdentityError, PluginContainmentError,
-                PluginRepoUnavailable, CliUnavailable, UnsupportedVaultVersion, DshConfigError) as e:
+                PluginRepoUnavailable, CliUnavailable, UnsupportedVaultVersion,
+                PlatformUnavailable) as e:
             print(f"plugin status 停止: {e}")
             return 1
         if ph:
             print("插件:")
             for h in ph:
                 print(f"  [{h.state}] {h.name}@{h.tool}")
-        return 1 if (links or any(x[0] != "ok" for x in (rows + oc_rows + dsh_rows + vh))
+        return 1 if (links or any(x[0] != "ok" for x in (rows + extra_rows + vh))
                      or any(h.state != "ok" for h in ph)) else 0
     return 0
 
@@ -365,29 +373,44 @@ def _cmd_register(args) -> int:
         with _stdout_to_stderr() if json_mode else nullcontext():
             dev = load_device(vault_root, host)
             # ---- 预检/准备（只读；任何确定性错误在此抛、零写入）----
+            loaded = platforms.enabled(dev)                 # 停用的平台在这里就滤掉，不加载不探测
             to_link, ensured = plan_register_skills(vault_root, dev)
             hm_links = plan_hub_memory_skill(hub_root, dev)
-            check_link_collisions(to_link, hm_links)     # 跨来源同名（如金库也有 hub-memory）→ 零写
-            oc_link, oc_ensured = plan_link_opencode_skills(vault_root, dev, hub_root)  # opencode 自己的落点
-            dsh_copies, dsh_writes, dsh_ensured = plan_configure_dsh_loader(vault_root, dev, hub_root)
+            extras, down = [], []                           # 各平台自己的落点（opencode 链、dsh loader……）
+            for x in loaded:
+                if x.adapter is None:
+                    continue
+                try:
+                    plan = x.adapter.prepare_register(vault_root, dev, hub_root)
+                except PlatformUnavailable as e:            # 先收齐所有平台的诊断，最后统一拒绝
+                    down.append(f"{x.name}: {e}")
+                    continue
+                if plan is not None:
+                    extras.append((x.adapter, plan))
+            msg = platforms.unavailable_message(loaded, down)
+            if msg:
+                raise PlatformUnavailable(msg)              # 启用的平台有一个不可用 → 整次零写入
+            # 跨来源同名（如金库也有 hub-memory）、跨平台同一目标 → 零写
+            check_link_collisions(to_link, hm_links, *[p.links for _, p in extras])
             check_config(vault_root, host)
-            writes, warnings, oc_plan = prepare_memory_views(vault_root, dev)
+            writes, warnings, view_plans = prepare_memory_views(vault_root, dev)
+            check_write_collisions(writes, *[p.writes for _, p in extras])
             plugin_plan = prepare_plugin_register(vault_root, dev)          # 预检并入 prepare
-            hint = stale_skills_paths_hint(dev, vault_root)
-            if hint:
-                warnings.append(hint)
+            for _, p in extras:
+                warnings += p.warnings
             # ---- 提交（预检全过之后才动笔）----
             commit_register_skills(to_link, w)
             commit_hub_memory_skill(hm_links, w)
-            commit_link_opencode_skills(oc_link, w)
-            commit_configure_dsh_loader(dsh_copies, dsh_writes, w)
+            for _, p in extras:
+                p.commit(w)
             write_config(vault_root, host, hub_root, w)
-            commit_memory_views(writes, oc_plan, w)
+            commit_memory_views(writes, view_plans, w)
             prep = execute_plugin_plan(plugin_plan, w)                      # 提交期执行 CLI
     except (RegisterConflict, FileNotFoundError, LinkError, SharedSkillsEscape,
             ConfigConflict, ViewScopeError, SharedMemoryError, BlockError,
             PluginManifestError, PluginIdentityError, PluginContainmentError,
-            CliUnavailable, UnsupportedVaultVersion, DshConfigError) as e:
+            CliUnavailable, UnsupportedVaultVersion,
+            PlatformConfigError, PlatformUnavailable) as e:
         if json_mode:
             _emit_error(_error_code(e), str(e), retryable=False)
             return 1
@@ -395,8 +418,7 @@ def _cmd_register(args) -> int:
     if json_mode:
         data = {"dry_run": bool(args.dry_run),
                 "skills_linked": len(ensured),
-                "opencode_links": len(oc_ensured),
-                "dsh_loader": len(dsh_ensured),
+                **{a.register_key: len(p.ensured) for a, p in extras if a.register_key},
                 "plugin": {"succeeded": len(prep.succeeded),
                            "skipped": len(prep.skipped),
                            "failed": len(prep.failed)}}
@@ -412,10 +434,9 @@ def _cmd_register(args) -> int:
         return 0 if _emit_result(data, meta={"warnings": warnings}) else 1
     verb = '预计就位' if args.dry_run else '已就位'
     print(f"{verb} {len(ensured)} 个 skill 链接 + hub-memory")
-    if oc_ensured:
-        print(f"{verb} {len(oc_ensured)} 个 opencode skill 链接（它自己的 skill 目录）")
-    if dsh_ensured:
-        print(f"{verb} {len(dsh_ensured)} 个 dsh loader 配置项")
+    for a, p in extras:
+        if p.ensured:
+            print(f"{verb} {len(p.ensured)} 个 {a.register_label}")
     for x in warnings:                               # opencode refuse 等：提示不阻断
         print("  ⚠", x)
     if plugin_plan.actions and not args.dry_run:
@@ -431,14 +452,14 @@ def _cmd_refresh(args) -> int:
     try:
         with _stdout_to_stderr() if json_mode else nullcontext():
             dev = load_device(vault_root, host)
-            writes, warnings, oc_plan = prepare_memory_views(vault_root, dev)
+            writes, warnings, view_plans = prepare_memory_views(vault_root, dev)
             plugin_plan = prepare_plugin_refresh(vault_root, dev)
-            commit_memory_views(writes, oc_plan, w)
+            commit_memory_views(writes, view_plans, w)
             prep = execute_plugin_plan(plugin_plan, w)
     except (FileNotFoundError, ViewScopeError, SharedMemoryError, BlockError,
             PluginBumpNeeded, PluginRepoDirty, PluginManifestError, PluginIdentityError,
             PluginRepoUnavailable, PluginContainmentError, CliUnavailable,
-            UnsupportedVaultVersion) as e:
+            UnsupportedVaultVersion, PlatformConfigError, PlatformUnavailable) as e:
         if json_mode:
             _emit_error(_error_code(e), str(e), retryable=False)
             return 1
@@ -646,12 +667,13 @@ def _cmd_bootstrap(args) -> int:
         return 1
     w = Writer(dry_run=args.dry_run)
     installed = []
-    for tool, home_key in (("claude", "CLAUDE_HOME"), ("codex", "CODEX_HOME")):
-        home = dev.paths.get(home_key)
-        if not home:
+    for x in platforms.enabled(dev):
+        target = x.adapter.bootstrap_dir(dev) if x.adapter is not None else None
+        if target is None:
             continue
+        tool = x.name
         for d in sorted(p for p in src.iterdir() if p.is_dir() and p.name.startswith("hub-")):
-            dest = Path(home) / "skills" / d.name
+            dest = target / d.name
             with _stdout_to_stderr() if json_mode else nullcontext():
                 w.copy_tree(d, dest)
             installed.append(f"{tool}:{d.name}")
@@ -944,14 +966,14 @@ def _cmd_sync(args) -> int:
         try:
             with _stdout_to_stderr():
                 dev = load_device(vault_root, args.host or current_host())
-                writes, warnings, oc_plan = prepare_memory_views(vault_root, dev)
+                writes, warnings, view_plans = prepare_memory_views(vault_root, dev)
                 plugin_plan = prepare_plugin_refresh(vault_root, dev)
-                commit_memory_views(writes, oc_plan, Writer())
+                commit_memory_views(writes, view_plans, Writer())
                 prep = execute_plugin_plan(plugin_plan, Writer())
         except (FileNotFoundError, ViewScopeError, SharedMemoryError, BlockError,
                 PluginBumpNeeded, PluginRepoDirty, PluginManifestError, PluginIdentityError,
                 PluginRepoUnavailable, PluginContainmentError, CliUnavailable,
-                UnsupportedVaultVersion) as e:
+                UnsupportedVaultVersion, PlatformConfigError, PlatformUnavailable) as e:
             _emit_error(_error_code(e), str(e), retryable=False)
             return 1
         if prep.failed:
@@ -985,6 +1007,11 @@ def _cmd_memory_read(args) -> int:
         print("没有 --vault 也没有 ~/.hub/config.toml，无法定位金库"); return 1
     try:
         body = read_memory(Path(vault), host, args.tool, args.name)
+    except (PlatformConfigError, PlatformDisabled) as e:
+        if json_mode:
+            _emit_error("E_VALIDATION", str(e), retryable=False)
+            return 1
+        print(e); return 1
     except (MemoryNotInView, FileNotFoundError, ViewScopeError, SharedMemoryError) as e:
         if json_mode:
             _emit_error("E_NOT_FOUND", str(e), retryable=False,
@@ -1064,7 +1091,8 @@ def _cmd_memory_explain(args) -> int:
     try:
         dev = load_device(Path(vault), host)
         result = explain_memories(Path(vault), dev, args.tool)
-    except (FileNotFoundError, ViewScopeError, SharedMemoryError, FrontmatterError) as e:
+    except (FileNotFoundError, ViewScopeError, SharedMemoryError, FrontmatterError,
+            PlatformConfigError, PlatformDisabled) as e:
         if json_mode:
             _emit_error(_error_code(e), str(e), retryable=False)
             return 1
@@ -1189,7 +1217,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_output_flags(mr)
     mr.add_argument("--vault", default=None)
     mr.add_argument("--host", default=None)
-    mr.add_argument("--tool", required=True, choices=["claude", "codex", "opencode", "dsh"])
+    mr.add_argument("--tool", required=True, choices=platforms.all_names())
     mr.add_argument("--name", required=True)
     mr.set_defaults(func=_cmd_memory_read)
     me = sub.add_parser("memory-explain")
@@ -1197,7 +1225,7 @@ def build_parser() -> argparse.ArgumentParser:
     me.add_argument("--vault", default=None)
     me.add_argument("--host", default=None)
     me.add_argument("--tool", default=None, choices=EXPLAIN_TOOLS,
-                    help="解释单个工具；省略时解释全部四个工具（claude/codex/opencode/dsh）")
+                    help="解释单个平台（须是本机启用的）；省略时解释本机启用的全部平台")
     me.set_defaults(func=_cmd_memory_explain)
 
     ma = sub.add_parser("memory-audit")
@@ -1223,7 +1251,7 @@ def build_parser() -> argparse.ArgumentParser:
     tg.add_argument("asset_type", choices=["plugin", "skill", "memory"],
                     help="资产类型")
     tg.add_argument("name", help="资产名（skill 可有 --plugin 消歧）")
-    tg.add_argument("harness", choices=["claude", "codex", "opencode", "dsh"],
+    tg.add_argument("harness", choices=platforms.all_names(),
                     help="目标平台")
     tg.add_argument("state", choices=["on", "off"], help="on=启用，off=关闭")
     tg.add_argument("--plugin", default=None,
@@ -1275,6 +1303,12 @@ def main(argv: list[str]) -> int:
     setattr(args, "json", json_mode)
     try:
         return args.func(args)
+    except (PlatformConfigError, PlatformDisabled, PlatformUnavailable) as e:
+        if json_mode:
+            _emit_error(_error_code(e), str(e), retryable=False)
+        else:
+            print(e, file=sys.stderr)
+        return 1
     except KeyboardInterrupt:
         if json_mode:
             _emit_error("E_INTERRUPTED", "interrupted", retryable=True)

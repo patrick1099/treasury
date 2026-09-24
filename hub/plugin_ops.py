@@ -7,6 +7,7 @@ from hub.plugin_state import record, read_state
 from hub.writer import Writer
 from hub.vault import require_version_exactly
 from hub.plugin_manifest import load_plugin_manifest, check_identity, plugin_version
+from hub import platforms
 
 @dataclass
 class PluginAction:
@@ -60,19 +61,30 @@ def _confirm_enabled_ok(a, runner) -> bool:
         return False
     return bool(inst and inst.enabled)
 
+# 各插件 CLI 方言必需的子命令。键是方言（平台适配器的 cli_dialect），不是平台名。
 NEEDED = {"claude": ["install","uninstall","enable","disable","marketplace"],
           "codex":  ["add","remove","marketplace"]}
 
-# 走**官方 CLI 装卸**的平台。opencode 不在其中：它没有插件安装通道,拿插件里打包的
-# skill 是靠 opencode_skills 把源逐个活链进它自己的 skill 目录,不经 CLI、无台账、
-# 无 install/enable 状态可查。所以本模块（plan/refresh/health 三处）遇到 opencode
-# 一律跳过——**不这么滤的话 NEEDED[tool] 直接 KeyError,整条 register/refresh/status
-# 全挂**。清单里写 platforms = [..., "opencode"] 仍然有意义:它是 opencode_skills
-# 判断"这插件该不该链过去"的依据。
-CLI_PLATFORMS = ("claude", "codex")
+# 本模块只管**走官方 CLI 装卸**的平台（适配器 plugin_channel == "cli"）。opencode / dsh 不在
+# 其中：它们没有插件安装通道，插件里的 skill 由各自适配器链过去或交给 loader，不经 CLI、
+# 无台账、无 install/enable 状态可查——不这么滤的话 NEEDED 直接 KeyError，整条
+# register/refresh/status 全挂。清单里写 platforms = [..., "opencode"] 仍然有意义：它是那两个
+# 平台判断"这插件该不该给它"的依据。
+#
+# 目标平台 = 清单声明支持 ∩ 本机启用 ∩ 走 CLI。本机停用的平台在这里就被滤掉，**绝不能**
+# 把"平台停用"当成"插件不要了"去生成禁用/卸载动作。
+def _cli_platforms(entry, dev=None) -> list[str]:
+    names = platforms.enabled_names(dev) if dev is not None else platforms.all_names()
+    return [t for t in names if t in entry.platforms and platforms.load(t).plugin_channel == "cli"]
 
-def _cli_platforms(entry) -> list[str]:
-    return [t for t in entry.platforms if t in CLI_PLATFORMS]
+def _dialect(tool) -> str:
+    return platforms.cli_dialect(tool)
+
+def _needed(tool) -> list:
+    d = _dialect(tool)
+    if d not in NEEDED:
+        raise ValueError(f"{tool} 的插件 CLI 方言 {d!r} 没有登记必需子命令")
+    return NEEDED[d]
 
 class PluginBumpNeeded(RuntimeError): pass
 class PluginRepoDirty(RuntimeError): pass
@@ -102,52 +114,61 @@ def _market_actions(tool, name, src, mkts):
     add = PluginAction(f"{name}:{tool}:mktadd", f"{tool} 注册/换源市场 {name}",
                        cli=CliCommand(tool, ["plugin","marketplace","add", src]))
     if cur is None: return [add]
-    if tool == "codex":                       # 拒绝同名换源 → remove + add
-        rm = PluginAction(f"{name}:{tool}:mktrm", f"codex 移除旧市场 {name}",
-                          cli=CliCommand("codex", ["plugin","marketplace","remove", name]))
+    d = _dialect(tool)
+    if d == "codex":                          # 拒绝同名换源 → remove + add
+        rm = PluginAction(f"{name}:{tool}:mktrm", f"{tool} 移除旧市场 {name}",
+                          cli=CliCommand(tool, ["plugin","marketplace","remove", name]))
         add.depends_on = (rm.id,)
         return [rm, add]
-    return [add]                               # Claude 覆盖
+    if d == "claude":
+        return [add]                           # Claude 覆盖
+    raise ValueError(f"{tool} 的插件 CLI 方言 {d!r} 没有换源规则")
 
 def _ensure_installed_enabled(tool, name, pid, installed, dep_mkt):
     dep = (dep_mkt,) if dep_mkt else ()
-    if tool == "codex":
-        return [] if pid in installed else [PluginAction(f"{name}:codex:add",
-            f"codex 安装启用 {pid}", depends_on=dep, cli=CliCommand("codex",["plugin","add",pid]))]
+    d = _dialect(tool)
+    if d == "codex":
+        return [] if pid in installed else [PluginAction(f"{name}:{tool}:add",
+            f"{tool} 安装启用 {pid}", depends_on=dep, cli=CliCommand(tool,["plugin","add",pid]))]
+    if d != "claude":
+        raise ValueError(f"{tool} 的插件 CLI 方言 {d!r} 没有安装规则")
     if pid not in installed:
         # claude plugin install 安装即在 user scope 自动启用 —— 不再补发冗余 enable。
         # install 成功即代表 readiness（installed+enabled），退役旧身份可依赖它。
-        return [PluginAction(f"{name}:claude:install", f"claude 安装启用 {pid}", depends_on=dep,
-                cli=CliCommand("claude",["plugin","install",pid,"--scope","user"]))]
+        return [PluginAction(f"{name}:{tool}:install", f"{tool} 安装启用 {pid}", depends_on=dep,
+                cli=CliCommand(tool,["plugin","install",pid,"--scope","user"]))]
     if not installed[pid].enabled:
         # 已装但禁用：只补 enable。带幂等兜底：并发/重跑时若已 enabled 则确认后按成功。
-        return [PluginAction(f"{name}:claude:enable", f"claude 启用 {pid}", depends_on=dep,
-                cli=CliCommand("claude",["plugin","enable",pid,"--scope","user"]),
+        return [PluginAction(f"{name}:{tool}:enable", f"{tool} 启用 {pid}", depends_on=dep,
+                cli=CliCommand(tool,["plugin","enable",pid,"--scope","user"]),
                 confirm_enabled=pid)]
     return []
 
 def _ensure_disabled(tool, name, pid, installed):
     if pid not in installed: return []
-    if tool == "codex":
-        return [PluginAction(f"{name}:codex:remove", f"codex 移除 {pid}",
-                cli=CliCommand("codex",["plugin","remove",pid]))]
+    d = _dialect(tool)
+    if d == "codex":
+        return [PluginAction(f"{name}:{tool}:remove", f"{tool} 移除 {pid}",
+                cli=CliCommand(tool,["plugin","remove",pid]))]
+    if d != "claude":
+        raise ValueError(f"{tool} 的插件 CLI 方言 {d!r} 没有禁用规则")
     if installed[pid].enabled:
-        return [PluginAction(f"{name}:claude:disable", f"claude 禁用 {pid}",
-                cli=CliCommand("claude",["plugin","disable",pid,"--scope","user"]))]
+        return [PluginAction(f"{name}:{tool}:disable", f"{tool} 禁用 {pid}",
+                cli=CliCommand(tool,["plugin","disable",pid,"--scope","user"]))]
     return []
 
 def prepare_plugin_register(vault_root, dev, runner=None) -> PluginPlan:
     entries = load_plugin_manifest(vault_root)
     if not entries: return PluginPlan([], [])      # 未迁移：跳过、不要求 v3
     require_version_exactly(vault_root, 3)
-    plats = sorted({p for e in entries for p in _cli_platforms(e)})
-    for tool in plats: preflight_cli(tool, NEEDED[tool], runner=runner)
+    plats = sorted({p for e in entries for p in _cli_platforms(e, dev)})
+    for tool in plats: preflight_cli(tool, _needed(tool), runner=runner)
     snap = {t: (installed_plugins(t, runner=runner), marketplaces(t, runner=runner)) for t in plats}
     actions = []
     for e in entries:
         _containment(vault_root, e.name); check_identity(vault_root, e)
         src = _plugin_source(vault_root, e.name)
-        for tool in _cli_platforms(e):
+        for tool in _cli_platforms(e, dev):
             installed, mkts = snap[tool]; pid = f"{e.name}@{e.name}"
             macts = _market_actions(tool, e.name, src, mkts); actions += macts
             dep = macts[-1].id if macts else None
@@ -174,22 +195,25 @@ def _is_dirty(src) -> bool:
     return bool(_git_text(src, "status", "--porcelain"))
 
 def _reinstall_chain(tool, name, pid, inst, head, version):
-    if tool == "codex":
-        a = PluginAction(f"{name}:codex:reinstall", f"codex 重装 {pid}",
-                         cli=CliCommand("codex",["plugin","add",pid]))
-        return [a, PluginAction(f"{name}:codex:state", f"台账 {name}/codex",
-                                depends_on=(a.id,), state=(name,"codex",head,version))]
-    u = PluginAction(f"{name}:claude:uninstall", f"claude 卸载 {pid}",
-                     cli=CliCommand("claude",["plugin","uninstall",pid,"--keep-data","--scope","user"]))
-    i = PluginAction(f"{name}:claude:install", f"claude 重装 {pid}", depends_on=(u.id,),
-                     cli=CliCommand("claude",["plugin","install",pid,"--scope","user"]))
+    d = _dialect(tool)
+    if d == "codex":
+        a = PluginAction(f"{name}:{tool}:reinstall", f"{tool} 重装 {pid}",
+                         cli=CliCommand(tool,["plugin","add",pid]))
+        return [a, PluginAction(f"{name}:{tool}:state", f"台账 {name}/{tool}",
+                                depends_on=(a.id,), state=(name,tool,head,version))]
+    if d != "claude":
+        raise ValueError(f"{tool} 的插件 CLI 方言 {d!r} 没有重装规则")
+    u = PluginAction(f"{name}:{tool}:uninstall", f"{tool} 卸载 {pid}",
+                     cli=CliCommand(tool,["plugin","uninstall",pid,"--keep-data","--scope","user"]))
+    i = PluginAction(f"{name}:{tool}:install", f"{tool} 重装 {pid}", depends_on=(u.id,),
+                     cli=CliCommand(tool,["plugin","install",pid,"--scope","user"]))
     chain, last = [u, i], i.id
     if not inst.enabled:                       # reinstall 会重新 enable → 恢复 disabled
-        d = PluginAction(f"{name}:claude:redisable", f"claude 恢复禁用 {pid}", depends_on=(i.id,),
-                         cli=CliCommand("claude",["plugin","disable",pid,"--scope","user"]))
+        d = PluginAction(f"{name}:{tool}:redisable", f"{tool} 恢复禁用 {pid}", depends_on=(i.id,),
+                         cli=CliCommand(tool,["plugin","disable",pid,"--scope","user"]))
         chain.append(d); last = d.id
-    chain.append(PluginAction(f"{name}:claude:state", f"台账 {name}/claude",
-                              depends_on=(last,), state=(name,"claude",head,version)))
+    chain.append(PluginAction(f"{name}:{tool}:state", f"台账 {name}/{tool}",
+                              depends_on=(last,), state=(name,tool,head,version)))
     return chain
 
 def prepare_plugin_refresh(vault_root, dev, runner=None) -> PluginPlan:
@@ -197,15 +221,15 @@ def prepare_plugin_refresh(vault_root, dev, runner=None) -> PluginPlan:
     if not entries: return PluginPlan([], [])
     require_version_exactly(vault_root, 3)
     ledger = read_state()
-    plats = sorted({p for e in entries for p in _cli_platforms(e)})
-    for tool in plats: preflight_cli(tool, NEEDED[tool], runner=runner)
+    plats = sorted({p for e in entries for p in _cli_platforms(e, dev)})
+    for tool in plats: preflight_cli(tool, _needed(tool), runner=runner)
     snap = {t: installed_plugins(t, runner=runner) for t in plats}
     actions = []
     for e in entries:
         _containment(vault_root, e.name)
         check_identity(vault_root, e)
         src = _plugin_source(vault_root, e.name)
-        for tool in _cli_platforms(e):
+        for tool in _cli_platforms(e, dev):
             installed = snap[tool]; pid = f"{e.name}@{e.name}"
             if pid not in installed: continue          # 未装→跳过（refresh 不装）
             if _is_dirty(src): raise PluginRepoDirty(f"仓 {e.name} 未提交，先提交你的 bump")
@@ -237,7 +261,7 @@ def _health_state(vault_root, dev, e, tool, installed, mkts, ledger) -> str:
     if not _same_path(mkts[name], _plugin_source(vault_root, name)): return "source-moved"
     desired = name in dev.plugins.get(tool, [])
     present = pid in installed
-    active = present and (installed[pid].enabled if tool == "claude" else True)
+    active = present and (installed[pid].enabled if platforms.load(tool).cli_has_disable else True)
     if desired and not active: return "enable-drift"
     if not desired and present: return "enable-drift"
     if present:
@@ -266,11 +290,11 @@ def plugin_health(vault_root, dev, runner=None) -> list:
     if not entries: return []
     require_version_exactly(vault_root, 3)
     ledger = read_state()
-    plats = sorted({p for e in entries for p in _cli_platforms(e)})
+    plats = sorted({p for e in entries for p in _cli_platforms(e, dev)})
     snap = {t: (installed_plugins(t, runner=runner), marketplaces(t, runner=runner)) for t in plats}
     out = []
     for e in entries:
-        for tool in _cli_platforms(e):          # opencode 的健康由 opencode_skill_status 报
+        for tool in _cli_platforms(e, dev):          # opencode 的健康由 opencode_skill_status 报
             installed, mkts = snap[tool]
             out.append(PluginHealth(e.name, tool, _health_state(vault_root, dev, e, tool, installed, mkts, ledger)))
     return out

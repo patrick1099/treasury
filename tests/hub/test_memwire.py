@@ -149,7 +149,7 @@ def test_opencode_default_path_untouched_without_explicit_optin(tmp_path, monkey
     default_cfg.parent.mkdir(parents=True, exist_ok=True)
     default_cfg.write_text('{"model": "x"}', encoding="utf-8")
     writes, warnings, plan = prepare_memory_views(tmp_path, dev)
-    assert plan is None                                            # 没接 opencode
+    assert plan == []                                              # 没接 opencode
     assert not any("opencode" in w for w in warnings)
     wire_memory_views(tmp_path, dev, Writer())
     assert default_cfg.read_text(encoding="utf-8") == '{"model": "x"}'   # 一个字节没动

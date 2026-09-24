@@ -5,12 +5,14 @@ from hub.vault import load_device
 from hub.memview import collect_view_entries
 from hub.frontmatter import load_memory
 from hub.links import resolve_symbols
+from hub.platforms import check_enabled
 
 class MemoryNotInView(RuntimeError):
     pass
 
 def read_memory(vault_root: Path, host: str, tool: str, name: str) -> str:
     dev = load_device(vault_root, host)
+    check_enabled(dev, tool)                    # 本机停用的平台没有视图，点名读它明确报错
     entries = {e.name: e for e in collect_view_entries(vault_root, dev, tool)}
     if name not in entries:
         raise MemoryNotInView(f"记忆 {name!r} 不在本机 {tool} 视图里（不存在或越 scope），拒读。")

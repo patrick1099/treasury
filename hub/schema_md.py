@@ -159,7 +159,9 @@ type,一条 project 归档后仍是 project,只是不再影响当前行动。**�
 
 ### scope
 
-- 语法只有四种谓词:`global` / `class:<名>` / `project:<名>` / `tool:<claude|codex|opencode>`。
+- 语法只有四种谓词:`global` / `class:<名>` / `project:<名>` / `tool:<平台名>`。
+  平台名是 hub 认识的全部平台(当前 claude / codex / opencode / dsh),**不看本机启用了哪些**——
+  别的设备写的 `tool:opencode` 在停用 opencode 的设备上照样合法,只是这台机不出那份视图。
 - `global` / `class:` / `project:` 同属**设备订阅维度**,维度内 **OR**;`tool:` 是独立维度,
   维度内 **OR**;两维之间 **AND**;**某维度没写标签 = 该维度匹配全部**。
 - `global` **必须独占**(不与任何标签混用,混了就是非法,`hub sync` / 视图生成都会停)。
@@ -188,6 +190,7 @@ type,一条 project 归档后仍是 project,只是不再影响当前行动。**�
 ```toml
 class = ["work"]              # 本机的类别。class:<名> 谓词对的就是这里
 projects = []                 # 本机在做的工程编码。project:<名> 谓词对这里
+platforms = ["claude", "codex"]   # 可选:本机启用哪些 AI 平台(见下)
 
 [paths]                       # 符号表:符号根 → 本机的真实绝对路径(见 §4)
 VAULT = "C:/Users/x/hub-vault"
@@ -211,6 +214,21 @@ agents = "C:/Users/x/.codex/AGENTS.md"
 
 `[sources.*]` 是**提取器**的输入,加载器一般不用管;`class` / `projects` / `[paths]`
 是**加载器**要用的。
+
+### `platforms`:本机启用哪些平台
+
+顶层键(必须写在第一个 `[表]` 之前)。hub 只对列出的平台出视图、建链、装插件、做检查;
+没列的平台 hub **完全不碰**——不探测、不写、也不把"平台停用"当成"插件不要了"去卸载。
+
+| 写法 | 含义 |
+|---|---|
+| 不写这个键 | 启用 hub 认识的全部平台(老设备不改配置,行为不变) |
+| `platforms = []` | 全部停用 |
+| `platforms = ["claude", "codex"]` | 只启用这两个 |
+| 不是字符串数组 / 写了 hub 不认识的名字 | **报错**,所有读 device.toml 的命令都停 |
+
+停用某平台时,它在 `[paths]` 里的路径和 `[plugins.<平台>]` / `[skills.<平台>]` 可以留着——
+hub 不读它们;把名字加回 `platforms` 即恢复。已有残留(旧视图、旧链接)hub 不自动删。
 
 ### 缺项 vs 路径不存在 —— 两回事,别混
 
@@ -520,6 +538,9 @@ sha = "..."                       # 可选：钉住版本
 因此 `platforms` 里写 `opencode` **不会**触发任何 CLI；它只是 hub 判断"这插件该不该
 链进 opencode"的依据。本机要不要，仍看 `<设备>/device.toml` 的 `[plugins.opencode].enabled`
 ——与 claude/codex 同一个口径：清单说支持、设备说要，两道闸都过才落地。
+
+在这两道闸之前还有一道：**平台本身在本机启用**（`device.toml` 顶层 `platforms`，见 §3）。
+停用的平台连它的 CLI 都不调，已装的插件原样留着。
 
 opencode 的落点由 `[paths]` 的 `OPENCODE_HOME`（配置目录）决定，缺省从 `OPENCODE_CONFIG`
 反推其父目录；两个都没有 = 本机没装 opencode，hub 一个链接都不建。
