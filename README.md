@@ -1,6 +1,17 @@
 # treasury
 
-跨工具/设备的个人 AI 数据层。两块:
+跨工具/设备的个人 AI 数据层。
+
+新电脑接入时，把这句话发给能操作本机的 AI：
+
+```text
+请按照 https://github.com/patrick1099/treasury/blob/main/INSTALL.md
+把这台设备接入我的 treasury-vault，完成配置、安装和验证。
+```
+
+[新设备安装说明](INSTALL.md)包括 GitHub 登录、规则与记忆接入、skills / plugins 安装和日常同步。
+
+仓库有两块:
 
 - **`hub/`** —— 数据层本体(共享金库 `treasury-vault` 的采集/分发/校验)。用法见 [`hub/README.md`](hub/README.md)。
 - **顶层四件套** —— 换电脑时迁移 Claude Code 和 Codex 的全部个人数据,即下面这份说明。

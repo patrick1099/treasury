@@ -5,6 +5,7 @@
 2. docs/BLUEPRINT.md —— 它是什么、行为契约
 3. docs/CHANGELOG.md —— 最近 5 条；要改哪块，再搜那块相关的「没选的路」
 4. 改金库格式前读 `hub/schema_md.py`（生成 SCHEMA.md，是 hub 与各平台之间的唯一契约）；命令用法看 `hub/README.md`；需求全貌看 `docs/NEEDS.md`
+5. 新设备接入流程看根目录 `INSTALL.md`，`README.md` 只提供入口；修改接入说明时核对当前命令与平台行为。
 
 ## 命令
 - 跑：`py -3 -m hub.cli <命令> --vault C:/Users/huawei/treasury-vault --host 2025-bg-016`（`--json` 出机器信封，`--dry-run` 只预演）

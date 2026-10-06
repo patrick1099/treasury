@@ -22,6 +22,8 @@
 - **解释 / 巡检** `memory-explain` / `memory-audit`：说清每条记忆进了哪段视图、为什么；列出归档候选。只读。
 - **密钥** `secrets exec|run|render|unlock`：exec 给 AI 用，只能跑预先声明的 profile，输出里的密钥被遮罩；另外三条只给人用。
 
+**新设备接入**：把 GitHub 上的 `INSTALL.md` 交给能操作本机的 AI，可按说明拉取工具仓和金库、识别本机路径、沿用参考设备的订阅和插件选择，再接入共享规则、记忆、skills、plugins 并验收。已有规则和本机修改保留；需要本人登录或存在内容冲突时明确报告。README 提供入口，说明中同时区分接收更新与提交推送。
+
 **迁移工具**（`migrate.py` 等）：`export` 把 Claude Code / Codex 的个人数据打包（不含登录凭证），`import` 在新机还原，支持改写用户名和工程路径。
 
 **I/O / 数据契约（换语言必须逐字保留）**：
