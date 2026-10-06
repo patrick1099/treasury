@@ -311,6 +311,135 @@ def test_audit_vault_dir_missing_rc1(machine_out, machine_err, tmp_path):
     assert err["error"]["code"] == "E_NOT_FOUND"
 
 
+# ---- memory-audit：收件箱（原生记忆目录 vs 金库）-----------------------------
+
+def _mk_inbox_vault(tmp_path, n_dirs=1, extra_device=""):
+    vault = _mk_vault(tmp_path)
+    dirs = [tmp_path / f"native_{i}" for i in range(n_dirs)]
+    for d in dirs:
+        d.mkdir()
+        (d / "MEMORY.md").write_text("- 索引\n", encoding="utf-8")
+    listed = ", ".join(f'"{d.as_posix()}"' for d in dirs)
+    (vault / "h1" / "device.toml").write_text(
+        'class = []\nprojects = []\n' + extra_device
+        + '[paths]\nVAULT = "' + vault.as_posix() + '"\n'
+        + f'[sources.claude]\nmemory = [{listed}]\n', encoding="utf-8")
+    return vault, dirs
+
+
+def _native(d, name, desc="说明", body="正文\n", extra_meta=""):
+    (d / f"{name}.md").write_text(
+        f"---\nname: {name}\ndescription: {desc}\nmetadata:\n  type: reference\n"
+        f"{extra_meta}---\n{body}", encoding="utf-8")
+
+
+def _audit_inbox(machine_out, vault):
+    rc = main(["memory-audit", "--vault", str(vault), "--host", "h1", "--json"])
+    assert rc == 0
+    return json.loads(machine_out.getvalue().decode("utf-8"))["data"]["inbox"]
+
+
+def test_audit_inbox_classifies_overlap(machine_out, tmp_path):
+    vault, (d,) = _mk_inbox_vault(tmp_path)
+    shared = vault / "shared" / "memory"
+    shared.mkdir(parents=True)
+    _native(d, "same")
+    (shared / "same.md").write_bytes((d / "same.md").read_bytes())
+    _native(d, "meta")
+    (shared / "meta.md").write_text(
+        "---\nname: meta\ndescription: 说明\nmetadata:\n  type: reference\n"
+        "  group: 固件\n---\n正文\n", encoding="utf-8")
+    _native(d, "fork", body="原生这边改过\n")
+    _write_mem(vault, "fork", "reference", "说明")
+    _native(d, "old_name", body="独一份的正文\n")
+    (shared / "new_name.md").write_text(
+        "---\nname: new_name\ndescription: 改过名\nmetadata:\n  type: reference\n"
+        "---\n独一份的正文\n", encoding="utf-8")
+    _native(d, "inbox_only", body="还没收编\n")
+    rows = {r["name"]: r for r in _audit_inbox(machine_out, vault)}
+    assert set(rows) == {"same", "meta", "fork", "old_name"}
+    assert rows["same"]["kind"] == "identical"
+    assert rows["meta"]["kind"] == "metadata_only"
+    assert rows["fork"]["kind"] == "diverged"
+    assert rows["old_name"]["kind"] == "renamed"
+    assert rows["old_name"]["shared_name"] == "new_name"
+    assert rows["same"]["source"] == str(d / "same.md")
+    assert rows["same"]["index"] == str(d / "MEMORY.md")
+    assert rows["same"]["tool"] == "claude"
+    assert rows["same"]["source_tool_sees_shared"] is True
+
+
+def test_audit_inbox_flags_shared_copy_hidden_from_source_tool(machine_out, tmp_path):
+    vault, (d,) = _mk_inbox_vault(tmp_path)
+    _native(d, "codex_only")
+    _write_mem(vault, "codex_only", "reference", "说明", scope="[tool:codex]")
+    (row,) = _audit_inbox(machine_out, vault)
+    assert "claude" not in row["visible_to"]
+    assert row["source_tool_sees_shared"] is False
+
+
+def test_audit_inbox_scans_every_configured_dir(machine_out, tmp_path):
+    vault, (d0, d1) = _mk_inbox_vault(tmp_path, n_dirs=2)
+    _native(d1, "in_second")
+    _write_mem(vault, "in_second", "reference", "说明")
+    rows = _audit_inbox(machine_out, vault)
+    assert [r["source"] for r in rows] == [str(d1 / "in_second.md")]
+
+
+def test_audit_inbox_skips_sensitive_and_index(machine_out, tmp_path):
+    vault, (d,) = _mk_inbox_vault(tmp_path)
+    _native(d, "secret", extra_meta="  sensitive: true\n")
+    _write_mem(vault, "secret", "reference", "说明")
+    assert _audit_inbox(machine_out, vault) == []
+
+
+def test_audit_inbox_missing_source_dir_rc1(machine_out, machine_err, tmp_path):
+    vault, (d,) = _mk_inbox_vault(tmp_path)
+    (d / "MEMORY.md").unlink()
+    d.rmdir()
+    rc = main(["memory-audit", "--vault", str(vault), "--host", "h1", "--json"])
+    assert rc == 1
+    err = json.loads(machine_err.getvalue().decode("utf-8"))
+    assert err["error"]["code"] == "E_NOT_FOUND"
+
+
+def test_audit_inbox_null_without_device_toml(machine_out, tmp_path):
+    vault = _mk_vault(tmp_path)
+    (vault / "h1" / "device.toml").unlink()
+    assert _audit_inbox(machine_out, vault) is None
+
+
+def test_audit_inbox_leaves_native_dir_untouched(machine_out, tmp_path):
+    vault, (d,) = _mk_inbox_vault(tmp_path)
+    _native(d, "same")
+    _write_mem(vault, "same", "reference", "说明")
+    before = {p.name: p.read_bytes() for p in d.iterdir()}
+    _audit_inbox(machine_out, vault)
+    assert {p.name: p.read_bytes() for p in d.iterdir()} == before
+
+
+def test_audit_inbox_human_mode(tmp_path, capsys):
+    vault, (d,) = _mk_inbox_vault(tmp_path)
+    _native(d, "fork", body="改过\n")
+    _write_mem(vault, "fork", "reference", "说明")
+    rc = main(["memory-audit", "--vault", str(vault), "--host", "h1"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "收件箱里已进金库的" in out and "先合并再下架" in out and "fork" in out
+
+
+def test_collect_name_clash_is_validation_error(machine_out, machine_err, tmp_path):
+    vault, (d0, d1) = _mk_inbox_vault(tmp_path, n_dirs=2)
+    _native(d0, "dup", body="甲\n")
+    _native(d1, "dup", body="乙\n")
+    rc = main(["collect", "--vault", str(vault), "--host", "h1", "--json"])
+    assert rc == 1
+    err = json.loads(machine_err.getvalue().decode("utf-8"))
+    assert err["error"]["code"] == "E_VALIDATION"
+    assert "dup" in err["error"]["message"]
+    assert not (vault / "h1" / "claude" / "memory" / "dup.md").exists()
+
+
 def test_core_functions_share_classify_entries(tmp_path):
     """audit 的归档池走 classify_entries（与视图同一判据）——不是又一套『什么算归档』。"""
     vault = _mk_vault(tmp_path)

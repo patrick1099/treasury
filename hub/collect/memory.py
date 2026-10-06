@@ -8,7 +8,7 @@
 """
 from dataclasses import dataclass, field
 from pathlib import Path
-from hub.collect.errors import require_source
+from hub.collect.errors import MemoryNameClash, require_source
 from hub.frontmatter import load_memory, dump_memory
 from hub.guard import check_source
 from hub.writer import Writer
@@ -28,8 +28,13 @@ def _scan(source_dirs: list[Path]) -> tuple[list, list[str]]:
     源目录**配了就必须在**(见 errors.py)。过去这里把"配了但不在"当成"工具没装"
     跳过,于是源侧零条记忆 → _diff() 判定金库里每一条都该删 → 金库(唯一备份)被清空。
     "没配"这个合法情况由 source_dirs 为空表达,不由"目录不存在"表达。
+
+    跨源同名:内容(按落盘的 dump 比)一致 → 收一条;不一致 → 抛 MemoryNameClash。
+    判定放在这里而不是写入循环里,plan 和 collect 才会同时看见它,预览不会说「没问题」。
     """
     mems, sensitive = [], []
+    seen: dict[str, tuple[Path, str]] = {}
+    clashes: list[str] = []
     for d in source_dirs:
         d = Path(d)
         check_source(d)                     # 硬闸:目录本身(密钥路径)
@@ -45,7 +50,18 @@ def _scan(source_dirs: list[Path]) -> tuple[list, list[str]]:
             if m.sensitive:
                 sensitive.append(m.name)    # 硬闸 3：sensitive 不入库
                 continue
+            text = dump_memory(m)
+            if m.name in seen:
+                first, first_text = seen[m.name]
+                if first_text != text:
+                    clashes.append(f"{m.name}:\n    {first}\n    {p}")
+                continue
+            seen[m.name] = (p, text)
             mems.append(m)
+    if clashes:
+        raise MemoryNameClash(
+            f"{len(clashes)} 个记忆名在不同源里内容不同,备份区按名平铺,照写会互相覆盖。"
+            f"一个字节都没写。改掉其中一份的 name 后重试:\n  " + "\n  ".join(clashes))
     return mems, sensitive
 
 def _diff(mems: list, home: Path) -> tuple[set[str], set[str]]:

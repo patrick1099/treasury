@@ -3,6 +3,7 @@
 > 设计依据：`Obsidian Vault/Agent记忆方案/hub 记忆分层改造方案.md`（2026-08-27）。
 > 本文是那份方案的**可执行拆解**，不重复论证，只写「改哪个函数、哪条测试会红、验收看哪个数字」。
 > 日期：2026-08-31。**v3** = v2（经 codex 评审并复核事实，记录见 §10）+ 用户提出的归档/回收维度（§3.5）。
+> **v4（2026-09-30）**：A+B+C 已合入主线（`0f9c48b`）。阶段 D 按用户新定的「收件箱模式」重写（§5），08-31 的「关掉原生记忆」原稿留在 §5.5 作历史。
 
 ---
 
@@ -278,11 +279,67 @@ hub memory-explain --vault <金库> --host <主机> [--tool claude]
 
 ---
 
-## 5. 阶段 D：平台原生记忆收口
+## 5. 阶段 D：收编与下架闭环（2026-09-30 重写）
+
+### 5.1 为什么改
+
+08-31 的 D 是「关掉原生记忆、统一由 hub 注入」。用户没照做，反而把 Codex 侧重新打开了（09-24），原因是：进金库要手动 promote，太重，随手记的东西没处放。关掉原生记忆等于把「随手记」这个入口也关了。
+
+**新定位（用户 2026-09-30 定）**：
+
+- **原生记忆 = 收件箱**。Claude / Codex 两边都开着，随手记，不讲究格式。
+- **金库 = 正式库**。约每月过一遍整理计划（`curating-memory`，先出计划、逐批批准），把通用条目收编进来，再从收件箱下架。
+
+两个诉求各落在一处：**跨平台共享**靠收编（进了金库就对 Claude、Codex、所有仓库可见）；**省加载空间**靠下架（不下架，同一条会被 hub 视图和原生索引各注入一次）。
+
+要接受的代价（codex 评审 2026-09-30）：整理之前两边知识暂时不同步；Codex 保留原生召回，就不能承诺零重复。
+
+### 5.2 Claude 侧
+
+收编走现成的 `hub collect` → `hub promote-memory`。下架 hub **不做**：
+
+- promote 只知道备份区路径（各项目目录已经按 name 压平到 `<host>/claude/memory/`），不知道一条记忆来自哪个项目目录，自动删做不准。
+- 下架要同时删原生正文和改 Claude 自己的 `MEMORY.md` 索引，那是平台的文件格式。
+- 删除不可逆，按 §3.5 的原则判定权在人。
+
+hub 只负责把候选列出来：`hub memory-audit` 的 **inbox** 段，逐个扫 `device.toml [sources.*] memory` 里配的原生目录，对照金库分四类——
+
+| kind | 含义 | 能否直接下架 |
+|---|---|---|
+| `identical` | 落盘形态与金库那份一致 | 能 |
+| `metadata_only` | 正文相同，元数据不同（金库版补过 group 之类） | 能 |
+| `renamed` | 不同名，正文完全相同 | 能 |
+| `diverged` | 同名，正文已分岔 | 先合并 |
+
+每条带原生文件路径、同目录索引路径，以及金库那份按 scope 对哪些平台可见（`source_tool_sees_shared` 为 false 时下架等于来源平台丢了这条）。改写过的语义重复抓不到，留给整理时判断。
+
+**只删备份区没用**：原生那份还在，下次 collect 会采回来（不会污染 shared，但备份区又多出来）。
+
+**配套修的 bug**：collect 过去把多个原生目录按 name 平铺写进备份区，同名异文时后写的静默覆盖先写的，报告只数 1 条。现在 `_scan` 预检，同名异文抛 `MemoryNameClash`，一个字节都不写，点名两个来源；同名同文按一条收。收件箱模式一铺开，各仓都会攒记忆，这个迟早会撞。
+
+### 5.3 Codex 侧
+
+Codex 原生记忆是一整坨（`memory_summary.md` 约 20 KB 实际注入，`MEMORY.md` / `raw_memories.md` 几百 KB 是底料），不是一条一个文件，collect 不采、promote 也处理不了（`promote-memory` 写死从 `<host>/claude/memory` 读）。
+
+**不写采集器**，人工走：整理时用 summary 找候选，按需回查底料或当前事实，改写成规范条目**直接写进 `shared/memory`**（不伪装成 Claude 备份），经批准后 `sync`。summary 是筛选入口，不是充分的事实依据；被反复蒸馏不等于有新证据。等手动变烦了再考虑采集器。
+
+Codex 那边的下架不做：它的原生文件是后台生成状态，官方不建议手改。
+
+### 5.4 验收
+
+| 项 | 口径 |
+|---|---|
+| 收编可见 | 批准的条目进金库后，`hub memory-explain` 显示它对 Claude、Codex 都不是 scope_miss |
+| 下架干净 | Claude 侧下架后，`hub memory-audit` 的 inbox 不再列它；原生 `MEMORY.md` 索引里没有指向已删文件的悬挂行 |
+| 撞名拦得住 | 两个原生目录放同名异文记忆，`hub collect` 返回 E_VALIDATION，备份区零写入 |
+| 注入量分开看 | hub 视图（`wc -c ~/.hub/views/<tool>/MEMORY.md`）和原生注入（Claude 各项目 `MEMORY.md`、Codex `memory_summary.md`）分别观察，不混成一个数 |
+| 入库口径 | Claude 来源经 `promote-memory`；Codex 来源是批准后直接写入 shared，不要求经 promote |
+
+### 5.5 08-31 原稿（已被 §5.1 取代，保留作历史）
 
 **铁律不变：不删任何原生记忆库。** 只做两件事：停止新增 + 把该留的走人工闸门 promote 进金库。原生库原地留着，将来要回查还在。3.1 MB 对磁盘没有实际意义，删掉损失的是考古和回滚能力。
 
-### 5.1 Claude 侧（**这边才是真的要动**）
+#### Claude 侧（**这边才是真的要动**）
 
 开关（codex 给的官方文档出处，落地时先实测确认再写死）：
 
@@ -298,11 +355,11 @@ hub memory-explain --vault <金库> --host <主机> [--tool claude]
 - **走 `promote-memory` 进金库**（可复用经验）：`edit-tool-destroys-gb2312`、`subagent-new-file-lands-plaintext`、`kunlun-keil-batch-build-pitfalls`、`node-is-esafenet-whitelisted`
 - **留原地**（项目态，昆仑这摊结束就过期）：`kunlun-comm-errcode-blocker`、`kunlun-display-arch-review`、`openviking-eval-pending`
 
-### 5.2 Codex 侧：只是验证
+#### Codex 侧：只是验证
 
 `memories = false` 已经在配置里。本阶段做的是**确认它确实没在注入**，以及确认存量库不再增长。**一个字节都不删。**
 
-### 5.3 验收（不能只看字节数）
+#### 验收（不能只看字节数）
 
 | 项 | 口径 |
 |---|---|
@@ -355,7 +412,7 @@ hub memory-explain --vault <金库> --host <主机> [--tool claude]
 | 可解释 | `hub memory-explain` 的预测形状 == 新开一场会话实际看到的索引；且能解释 scope miss |
 | 归档 | 归档一条后：它从 L0 展开层消失、进「已归档」组，但 `hub memory-read` 仍读得到、正文一字未改、git 里只有 frontmatter 一行 diff |
 | 巡检 | `hub memory-audit` 只列不改——跑完 `git -C ~/treasury-vault status` 必须为空 |
-| 阶段 D | 见 §5.3 五条 |
+| 阶段 D | 见 §5.4 五条 |
 
 ---
 
@@ -364,10 +421,10 @@ hub memory-explain --vault <金库> --host <主机> [--tool claude]
 ```
 定基线(§6) → A(渲染瘦身 + 修 inventory 两处) → 提交
            → B(一等字段 + 折叠 + 归档维度 + 哈希版本化 + 抽分类函数) + C(memory-explain + memory-audit) → 提交
-           → D(Claude 侧 promote → 关开关；Codex 侧验证)
+           → D(collect 撞名预检 + memory-audit inbox 段；收编与下架由每月整理人工完成)
 ```
 
-A 可以立刻做完并提交，它不依赖任何未决问题。
+A、B、C 已于 2026-09-01 合入主线。
 
 ---
 

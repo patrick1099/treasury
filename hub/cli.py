@@ -13,7 +13,7 @@ from hub.links import lint_raw_paths, load_lint_exempt
 from hub.backend import (GitBackend, ConflictError, RemoteUnavailable,
                          GitlinkTracked, ChatsTracked, tracked_gitlinks)
 from hub.collect import plan_deletions, preflight, run_all
-from hub.collect.errors import MissingSourceError
+from hub.collect.errors import MemoryNameClash, MissingSourceError
 from hub.frontmatter import FrontmatterError
 from hub.writer import Writer
 from hub.register import (register_skills, RegisterConflict,
@@ -26,6 +26,7 @@ from hub.promote import (promote_skill, promote_memory, promote_memory_all,
                          PromoteConflict, PromoteMemoryConflict)
 from hub.status_report import link_status, view_health, platform_status
 from hub.fslink import LinkError
+from hub.guard import SecretPathError
 from hub.vaultpaths import SharedSkillsEscape
 from hub.hubconfig import read_config, write_config, check_config, ConfigConflict
 from hub.memread import read_memory, MemoryNotInView
@@ -111,6 +112,8 @@ Do NOT use for:
   四个工具；字节数对实际渲染字符串算（len(text.encode("utf-8"))），并解释 scope miss。
 - `memory-audit --vault P --host H [--stale-days 90] [--archived-days 180]`：列三类归档
   候选（疑似完成 / 久未更新 / 归档已久），只列不改。两个阈值是拍的，请按真实数据调。
+  另列「收件箱」：device.toml [sources.*] memory 里的原生记忆，哪些已经进了金库
+  （identical / metadata_only / renamed / diverged），供整理时下架；hub 本身不删。
 - `status [--check]`：金库 git 状态 + skill/插件链接健康；`--check` 不健康返回 1。
 - `sync [--refresh]`：git 拉取 + lint + 写 MEMORY.md 索引 + 推送；`--refresh` 串联刷新。
 - `collect`：把本机配置的源镜像进金库备份区（有删除需 `--yes` 确认）。
@@ -149,14 +152,16 @@ Do NOT use for:
 - memory-explain --json 的 data 含 `host` / `vault` / `tool` / `tools`（每个工具一段：
   summary 计数 + entries[{name, decision, rule, group, bytes, text}]）。
 - memory-audit --json 的 data 含 `git_available` / `git_clean` 与 candidates
-  {possibly_done, stale, archived_long}，每条候选带名字与理由。
+  {possibly_done, stale, archived_long}，每条候选带名字与理由；以及 `inbox`：
+  [{name, shared_name, kind, tool, source, index, visible_to, source_tool_sees_shared}]，
+  本机没有 device.toml 时为 null（没查，不是查了为空）。
 
 ## Side Effects & Safety
 
 - `sync` / `collect` 会写金库并可能触发 git 提交/推送；`--dry-run` 只报告不落盘。
 - 其余命令只读。共享记忆是唯一备份，删除类操作要确认。
 - memory-explain / memory-audit 只读：一个字节都不写金库（audit 只跑 git log / git status，
-  纯读）。跑完 audit 后 `git -C <金库> status --short` 仍为空。
+  纯读；收件箱段只读原生记忆目录，不删不改）。跑完 audit 后 `git -C <金库> status --short` 仍为空。
 - 不联网（除 sync 的 git 远端）。
 - **secrets 泄密边界**：密钥真值只在子进程 env 里。exec 的 json 信封只放 tool /
   exit_code / 遮罩后的 stdout / 截断的 stderr_tail；run 的 json 信封只放 exit_code，
@@ -562,6 +567,12 @@ def _cmd_collect(args) -> int:
             return 1
         print("collect 停止:device.toml 里的源路径有问题\n")
         print(e)
+        return 1
+    except MemoryNameClash as e:
+        if json_mode:
+            _emit_error("E_VALIDATION", f"collect 停止:{e}", retryable=False)
+            return 1
+        print(f"collect 停止:{e}")
         return 1
 
     try:
@@ -1119,9 +1130,15 @@ def _cmd_memory_audit(args) -> int:
                         suggestion="确认 --vault 指向金库根（含 vault.toml 的目录）")
             return 1
         print(f"金库目录不存在: {vault_root}"); return 1
+    host = args.host or read_config().get("host") or current_host()
     try:
-        result = audit_memories(vault_root, args.stale_days, args.archived_days)
-    except (ViewScopeError, SharedMemoryError, FrontmatterError) as e:
+        dev = load_device(vault_root, host)
+    except FileNotFoundError:
+        dev = None
+    try:
+        result = audit_memories(vault_root, args.stale_days, args.archived_days, dev)
+    except (ViewScopeError, SharedMemoryError, FrontmatterError, MissingSourceError,
+            SecretPathError) as e:
         if json_mode:
             _emit_error(_error_code(e), str(e), retryable=False)
             return 1
