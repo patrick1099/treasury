@@ -195,3 +195,38 @@ def test_collected_memory_round_trips_through_load_vault(tmp_path):
     collect_memory([src], v, "box1", Writer())
     vault = load_vault(v)
     assert "roundtrip" in {m.name for m in vault.memories}
+
+def test_same_name_different_content_across_sources_refuses_and_writes_nothing(tmp_path):
+    from hub.collect.errors import MemoryNameClash
+    v = _vault(tmp_path)
+    stale = v / "box1" / "claude" / "memory" / "gone.md"
+    stale.write_text("---\nname: gone\ndescription: d\n---\n旧\n", encoding="utf-8")
+    proj_a, proj_b = tmp_path / "proj_a", tmp_path / "proj_b"
+    _mem(proj_a, "dup", body="A 项目的结论\n")
+    _mem(proj_b, "dup", body="B 项目的结论\n")
+    _mem(proj_b, "other")
+    with pytest.raises(MemoryNameClash) as ei:
+        collect_memory([proj_a, proj_b], v, "box1", Writer())
+    msg = str(ei.value)
+    assert "dup" in msg and str(proj_a / "dup.md") in msg and str(proj_b / "dup.md") in msg
+    assert not (v / "box1" / "claude" / "memory" / "dup.md").exists()
+    assert not (v / "box1" / "claude" / "memory" / "other.md").exists()
+    assert stale.exists()
+
+def test_plan_also_refuses_name_clash(tmp_path):
+    from hub.collect.errors import MemoryNameClash
+    v = _vault(tmp_path)
+    proj_a, proj_b = tmp_path / "proj_a", tmp_path / "proj_b"
+    _mem(proj_a, "dup", body="甲\n")
+    _mem(proj_b, "dup", body="乙\n")
+    with pytest.raises(MemoryNameClash):
+        plan_memory([proj_a, proj_b], v, "box1")
+
+def test_same_name_same_content_across_sources_collects_once(tmp_path):
+    v = _vault(tmp_path)
+    proj_a, proj_b = tmp_path / "proj_a", tmp_path / "proj_b"
+    _mem(proj_a, "dup")
+    _mem(proj_b, "dup")
+    r = collect_memory([proj_a, proj_b], v, "box1", Writer())
+    assert r.written == ["dup"]
+    assert (v / "box1" / "claude" / "memory" / "dup.md").exists()

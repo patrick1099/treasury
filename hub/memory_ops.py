@@ -11,12 +11,20 @@ memory-audit：列三类归档候选——疑似完成 / 久未更新 / 归档�
 用户的人工闸门（plan §3.5：判定权在人，不在代码），代码只负责把候选指出来，审阅那一步
 不许省。两个阈值是拍出来的（plan §9），必须做成命令行参数，不许写死在代码里。
 
+memory-audit 另有一段「收件箱」：平台原生记忆目录（device.toml 的 [sources.*] memory）
+里哪些条目已经进了金库。收件箱模式下，原生记忆是随手记的收件箱、金库是正式库；收编之后
+原生那份不下架，同一条就会被注入两次。下架是删文件、改平台自己的索引，**hub 不做**——
+这里只把候选和分岔程度列出来，删由整理时的人或 AI 完成（plan §5 阶段 D）。
+
 两条命令都不写一个字节：所有计算在内存里完成，直接交给 CLI 输出。
 """
 import subprocess
 from datetime import date, datetime
 from pathlib import Path
 
+from hub.collect.errors import require_source
+from hub.frontmatter import load_memory, dump_memory
+from hub.guard import check_source
 from hub.memview import (load_shared_memories, validate_scopes, classify_entries,
                          _view_entry, expanded_entry_text)
 from hub.model import DeviceProfile
@@ -150,11 +158,71 @@ def _last_commit_date(vault_root: Path, name: str):
         return None
 
 
-def audit_memories(vault_root: Path, stale_days: int = 90, archived_days: int = 180) -> dict:
+_INDEX_FILES = ("MEMORY.md", "memory-index.md")
+
+
+def _inbox_kind(native, shared) -> str:
+    """同名时分三档：落盘形态完全一致 / 正文相同但元数据不同（金库版补过 group 之类）/
+    正文已分岔。只有前两档能直接下架，分岔的要先合并。"""
+    if dump_memory(native) == dump_memory(shared):
+        return "identical"
+    if native.body.strip() == shared.body.strip():
+        return "metadata_only"
+    return "diverged"
+
+
+def inbox_overlap(dev: DeviceProfile, mems, parsed) -> list[dict]:
+    """扫本机所有配了的原生记忆目录，列出已经进了金库的条目。
+
+    同名算一条；不同名但正文完全相同算 renamed（收编时改过名）。改写过的语义重复抓不到，
+    留给整理时判断。visible_to 按 scope 算金库那份对本机启用的哪些平台可见——来源平台
+    看不见它时，下架原生那份就等于那个平台丢了这条。
+    """
+    shared = {m.name: m for m in mems}
+    by_body: dict[str, list[str]] = {}
+    for m in mems:
+        key = m.body.strip()
+        if key:
+            by_body.setdefault(key, []).append(m.name)
+    enabled = enabled_names(dev)
+    rows = []
+    for tool, src in dev.sources.items():
+        for d in src.memory:
+            d = Path(d)
+            check_source(d)
+            require_source(d, f"[sources.{tool}] memory 里的一项")
+            for p in sorted(d.glob("*.md")):
+                if p.name in _INDEX_FILES:
+                    continue
+                check_source(p)
+                m = load_memory(p)
+                if m.sensitive:
+                    continue
+                if m.name in shared:
+                    target = m.name
+                    kind = _inbox_kind(m, shared[target])
+                else:
+                    same_body = by_body.get(m.body.strip()) if m.body.strip() else None
+                    if not same_body:
+                        continue
+                    target, kind = same_body[0], "renamed"
+                visible = [t for t in enabled
+                           if scope_matches(parsed[target], dev.classes, dev.projects, t)]
+                rows.append({"name": m.name, "shared_name": target, "kind": kind,
+                             "tool": tool, "source": str(p),
+                             "index": str(d / "MEMORY.md"),
+                             "visible_to": visible,
+                             "source_tool_sees_shared": tool in visible})
+    return rows
+
+
+def audit_memories(vault_root: Path, stale_days: int = 90, archived_days: int = 180,
+                   dev: DeviceProfile | None = None) -> dict:
     """列三类归档候选，只列不改。归档池（第三条）走 classify_entries 的归档段——和视图
-    用的是同一个判据，代码不另设一套「什么算归档」。前两条扫 project 且未归档的条目。"""
+    用的是同一个判据，代码不另设一套「什么算归档」。前两条扫 project 且未归档的条目。
+    给了 dev 才扫收件箱（inbox）；没给时 inbox 为 None，表示没查，不是查了为空。"""
     mems = load_shared_memories(vault_root)
-    validate_scopes(mems)
+    parsed = validate_scopes(mems)
     entries = [_view_entry(m, vault_root) for m in mems]
     cls = classify_entries(entries)
     today = date.today()
@@ -192,6 +260,7 @@ def audit_memories(vault_root: Path, stale_days: int = 90, archived_days: int = 
         "git_clean": _git_status(vault_root).strip() == "",
         "candidates": {"possibly_done": possibly_done, "stale": stale,
                        "archived_long": archived_long},
+        "inbox": inbox_overlap(dev, mems, parsed) if dev is not None else None,
     }
 
 
@@ -251,6 +320,27 @@ def render_audit_human(result: dict) -> str:
             out.append(f"- {r['name']} —— 归档于 {r['archived']}（{r['days']} 天前）")
     if not any(c.values()):
         out.append("没有候选（三类都为空）")
+    inbox = result.get("inbox")
+    if inbox:
+        out.append(f"## 收件箱里已进金库的（{len(inbox)} 条 · 原生目录还留着，会被重复注入）")
+        labels = (("identical", "与金库一致，可直接下架"),
+                  ("metadata_only", "正文相同、元数据不同（金库版补过字段），可下架"),
+                  ("renamed", "改过名、正文相同，可下架"),
+                  ("diverged", "同名但正文已分岔，先合并再下架"))
+        for kind, label in labels:
+            rows = [r for r in inbox if r["kind"] == kind]
+            if not rows:
+                continue
+            out.append(f"### {label}（{len(rows)}）")
+            for r in rows:
+                alias = "" if r["name"] == r["shared_name"] else f" → 金库名 {r['shared_name']}"
+                warn = "" if r["source_tool_sees_shared"] else \
+                    f"  ⚠ 金库那份对 {r['tool']} 不可见（scope），下架等于它丢了这条"
+                out.append(f"- {r['name']}{alias}  [{r['source']}]{warn}")
+        out.append("下架 = 删掉原生正文，并删掉同目录 MEMORY.md 里对应那一行；"
+                   "只删备份区没用，下次 collect 会采回来。")
+    elif inbox is not None:
+        out.append("收件箱：原生目录里没有已进金库的条目")
     if not result["git_available"]:
         out.append("⚠ 金库不是 git 仓：久未更新检查跳过")
     out.append("git 状态: " + ("干净" if result["git_clean"] else "有未提交改动（只读命令不会动它们）"))

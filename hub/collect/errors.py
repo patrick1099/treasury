@@ -18,6 +18,16 @@ class MissingSourceError(RuntimeError):
     pass
 
 
+class MemoryNameClash(ValueError):
+    """多个记忆源里出现同名、内容却不同的记忆。
+
+    备份区按 name 平铺成 `<host>/claude/memory/<name>.md`,各项目目录压进同一处。
+    同名异文时逐条写入 = 后写的静默覆盖先写的,报告还只数 1 条——覆盖掉的那份在
+    金库里没有任何痕迹。所以撞名就在动笔之前炸,点名两个来源,让人去改其中一个的 name。
+    同名且内容一致不算撞,按一条收。
+    """
+
+
 def require_source(path, what: str, kind: str = "dir"):
     """配了就必须在,而且必须是对的类型。返回 path 本身,方便链式使用。
 

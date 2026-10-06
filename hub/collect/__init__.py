@@ -5,7 +5,7 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 from hub.collect.decl import DeclResult, collect_claude_decl, collect_codex_decl
-from hub.collect.errors import MissingSourceError, require_source
+from hub.collect.errors import MemoryNameClash, MissingSourceError, require_source
 from hub.collect.memory import MemoryResult, collect_memory, plan_memory
 from hub.collect.skills import collect_skills
 from hub.guard import check_source
