@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN" class="sl-theme-light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>hub-gui 资产矩阵</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.19.1/cdn/themes/light.css">
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.19.1/cdn/shoelace.js"></script>
+</head>
+<body>
+  <div class="page">
+    <sl-card class="hero-card">
+      <div slot="header" class="hero-header">
+        <div>
+          <h1>hub-gui</h1>
+          <p class="hero-subtitle">资产注入矩阵 · 手动开关</p>
+        </div>
+        <sl-badge variant="neutral" pill>本机</sl-badge>
+      </div>
+      <div id="status" class="status">正在加载 hub inventory…</div>
+      <div id="toggleStatus" class="toggle-status" aria-live="polite"></div>
+    </sl-card>
+
+    <sl-card class="filters-card">
+      <div class="filters">
+        <sl-select id="harnessFilter" label="Harness" class="filter-control" value="all" placeholder="全部">
+          <sl-option value="all">全部</sl-option>
+          <sl-option value="claude">Claude</sl-option>
+          <sl-option value="codex">Codex</sl-option>
+          <sl-option value="opencode">opencode</sl-option>
+          <sl-option value="dsh">dsh</sl-option>
+        </sl-select>
+        <sl-select id="typeFilter" label="资产类型" class="filter-control" value="all" placeholder="全部">
+          <sl-option value="all">全部</sl-option>
+          <sl-option value="plugin">插件</sl-option>
+          <sl-option value="skill">技能</sl-option>
+          <sl-option value="memory">记忆</sl-option>
+        </sl-select>
+        <sl-input id="searchInput" label="搜索" class="filter-control search-control" placeholder="名称 / ID / 路径 / 插件 / detail" clearable></sl-input>
+      </div>
+    </sl-card>
+
+    <sl-card class="table-card">
+      <div slot="header" class="table-card-header">
+        <span id="summaryLabel">摘要</span>
+        <sl-button id="refreshBtn" size="small" outline>刷新</sl-button>
+      </div>
+      <div id="summary" class="summary"></div>
+      <div class="table-scroll">
+        <table id="matrixTable">
+          <thead>
+            <tr>
+              <th class="asset-col">资产</th>
+              <th class="harness-col">Claude</th>
+              <th class="harness-col">Codex</th>
+              <th class="harness-col">opencode</th>
+              <th class="harness-col">dsh</th>
+            </tr>
+          </thead>
+          <tbody id="matrixBody"></tbody>
+        </table>
+      </div>
+    </sl-card>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
