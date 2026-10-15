@@ -2,14 +2,8 @@
 
 跨工具/设备的个人 AI 数据层。
 
-新电脑接入时，把这句话发给能操作本机的 AI：
-
-```text
-请按照 https://github.com/patrick1099/treasury/blob/main/INSTALL.md
-把这台设备接入我的 treasury-vault，完成配置、安装和验证。
-```
-
-[新设备安装说明](INSTALL.md)包括 GitHub 登录、规则与记忆接入、skills / plugins 安装和日常同步。
+新电脑接入时，把 [`INSTALL.md`](INSTALL.md) 这个文件整份发给能操作本机的 AI，说一句「照这个文件装」。
+它包括 GitHub 登录、规则与记忆接入、skills / plugins 安装和日常同步。
 
 仓库有两块:
 
